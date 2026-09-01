@@ -1,0 +1,43 @@
+{
+  "_comment": "Role → file mapping and default mixing parameters for FlowCast.",
+  "roles": {
+    "intro": {
+      "path": "source_bank/intro.mp3",
+      "description": "Played at the very beginning of the bulletin, before any vocal clip."
+    },
+    "outro": {
+      "path": "source_bank/outro.mp3",
+      "description": "Played at the end of the bulletin, after the last vocal clip."
+    },
+    "fond": {
+      "path": "source_bank/fond.mp3",
+      "description": "Background music looped or ducked under vocal clips throughout the bulletin."
+    },
+    "transition": {
+      "path": "source_bank/transition.mp3",
+      "description": "Short jingle inserted between vocal clips."
+    }
+  },
+  "defaults": {
+    "duck_db": -16,
+    "_duck_db_comment": "Background music ducking level in dB (relative to full volume).",
+
+    "transition_max_ms": 5000,
+    "_transition_max_ms_comment": "Maximum transition clip length in milliseconds.",
+
+    "transition_fade_in_ms": 1000,
+    "_transition_fade_in_ms_comment": "Fade-in duration applied to the transition clip (ms).",
+
+    "transition_fade_out_ms": 1000,
+    "_transition_fade_out_ms_comment": "Fade-out duration applied to the transition clip (ms).",
+
+    "silence_thresh_db_relative": -16,
+    "_silence_thresh_db_relative_comment": "Silence threshold expressed in dB relative to the mean dBFS of the clip.",
+
+    "min_silence_len_ms": 400,
+    "_min_silence_len_ms_comment": "Minimum silence length (ms) to be considered a real pause.",
+
+    "min_gap_safety_ms": 100,
+    "_min_gap_safety_ms_comment": "Safety margin (ms) kept before and after detected speech boundaries."
+  }
+}

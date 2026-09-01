@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: flowcast_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - SOURCE_BANK_DIR=/app/source_bank
+      - UPLOADS_DIR=/app/uploads
+      - OUTPUT_DIR=/app/output
+      - CONFIG_DIR=/app/config
+    volumes:
+      - ./backend/source_bank:/app/source_bank
+      - ./backend/uploads:/app/uploads
+      - ./backend/output:/app/output
+      - ./backend/config:/app/config
+    networks:
+      - flowcast_net
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: flowcast_web
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - api
+    networks:
+      - flowcast_net
+
+networks:
+  flowcast_net:
+    driver: bridge

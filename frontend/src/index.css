@@ -1,0 +1,234 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
+
+/* ── Tokens ─────────────────────────────────────────────────────────────── */
+:root {
+  /* Palette */
+  --clr-bg:          #0d0f14;
+  --clr-surface:     #161a24;
+  --clr-surface-2:   #1e2333;
+  --clr-border:      rgba(255 255 255 / 0.07);
+  --clr-accent:      #6e6cff;
+  --clr-accent-glow: rgba(110 108 255 / 0.35);
+  --clr-ok:          #22d3a4;
+  --clr-error:       #ff5f6d;
+  --clr-text:        #e8eaf0;
+  --clr-muted:       #7c8299;
+
+  /* Typography */
+  --ff-body: "Inter", system-ui, sans-serif;
+  --fs-xs:   0.75rem;
+  --fs-sm:   0.875rem;
+  --fs-base: 1rem;
+  --fs-lg:   1.25rem;
+  --fs-xl:   1.75rem;
+  --fs-2xl:  2.5rem;
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-semi:   600;
+  --fw-bold:   700;
+
+  /* Spacing */
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-6: 1.5rem;
+  --sp-8: 2rem;
+  --sp-12: 3rem;
+
+  /* Radius */
+  --r-sm:  6px;
+  --r-md:  12px;
+  --r-lg:  20px;
+
+  /* Transitions */
+  --t-fast: 150ms ease;
+  --t-base: 250ms ease;
+}
+
+/* ── Reset ──────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { font-size: 16px; scroll-behavior: smooth; }
+
+body {
+  font-family: var(--ff-body);
+  background: var(--clr-bg);
+  color: var(--clr-text);
+  min-height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.6;
+}
+
+/* ── Layout shell ───────────────────────────────────────────────────────── */
+.fc-shell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100dvh;
+  padding: var(--sp-8) var(--sp-4);
+  gap: var(--sp-8);
+
+  /* Subtle radial gradient background */
+  background:
+    radial-gradient(ellipse 60% 50% at 50% 0%, rgba(110 108 255 / 0.12) 0%, transparent 70%),
+    var(--clr-bg);
+}
+
+/* ── Hero ───────────────────────────────────────────────────────────────── */
+.fc-hero {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  animation: fadeSlideDown 0.6s var(--t-base) both;
+}
+
+.fc-logo {
+  font-size: 3.5rem;
+  filter: drop-shadow(0 0 18px var(--clr-accent-glow));
+  animation: pulse 3s ease-in-out infinite;
+}
+
+.fc-title {
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  letter-spacing: -0.03em;
+  background: linear-gradient(135deg, #fff 30%, var(--clr-accent));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.fc-subtitle {
+  font-size: var(--fs-base);
+  color: var(--clr-muted);
+  font-weight: var(--fw-normal);
+  letter-spacing: 0.01em;
+}
+
+/* ── Card ───────────────────────────────────────────────────────────────── */
+.fc-card {
+  width: 100%;
+  max-width: 480px;
+  background: var(--clr-surface);
+  border: 1px solid var(--clr-border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  box-shadow:
+    0 0 0 1px rgba(110 108 255 / 0.1),
+    0 8px 32px rgba(0 0 0 / 0.4);
+  animation: fadeSlideUp 0.6s 0.15s var(--t-base) both;
+
+  /* Glassmorphism inner glow */
+  backdrop-filter: blur(8px);
+}
+
+.fc-card__heading {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semi);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--clr-muted);
+}
+
+/* ── Badge ──────────────────────────────────────────────────────────────── */
+.fc-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
+.fc-badge--loading {
+  background: rgba(255 255 255 / 0.05);
+  color: var(--clr-muted);
+}
+
+.fc-badge--ok {
+  background: rgba(34 211 164 / 0.1);
+  color: var(--clr-ok);
+  border: 1px solid rgba(34 211 164 / 0.25);
+}
+
+.fc-badge--error {
+  background: rgba(255 95 109 / 0.1);
+  color: var(--clr-error);
+  border: 1px solid rgba(255 95 109 / 0.25);
+}
+
+/* ── Status dot ─────────────────────────────────────────────────────────── */
+.fc-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--clr-ok);
+  box-shadow: 0 0 6px var(--clr-ok);
+  animation: blink 2s ease-in-out infinite;
+}
+
+/* ── Spinner ────────────────────────────────────────────────────────────── */
+.fc-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255 255 255 / 0.1);
+  border-top-color: var(--clr-accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+/* ── Meta dl ────────────────────────────────────────────────────────────── */
+.fc-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--sp-1) var(--sp-4);
+  font-size: var(--fs-sm);
+  border-top: 1px solid var(--clr-border);
+  padding-top: var(--sp-4);
+}
+
+.fc-meta dt {
+  color: var(--clr-muted);
+  font-weight: var(--fw-medium);
+}
+
+.fc-meta dd {
+  color: var(--clr-text);
+}
+
+/* ── Keyframes ──────────────────────────────────────────────────────────── */
+@keyframes fadeSlideDown {
+  from { opacity: 0; transform: translateY(-16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50%       { transform: scale(1.06); }
+}
