@@ -3,9 +3,9 @@ FlowCast – Source-bank endpoints.
 
 Routes
 ------
-POST   /source-bank/{role}   Upload / replace an audio asset.
-GET    /source-bank           List current config + per-asset metadata.
-PATCH  /source-bank/config    Edit mixing defaults without redeploying.
+POST   /source-bank/{role}   Upload / replace an audio asset (intro|outro|fond).
+GET    /source-bank           Current config + per-asset metadata.
+PATCH  /source-bank/config    Edit mixing parameters without redeploying.
 """
 
 from __future__ import annotations
@@ -37,15 +37,16 @@ router = APIRouter(prefix="/source-bank", tags=["Source Bank"])
 # One process-level lock to serialise reads/writes to source_bank.json
 _json_lock = threading.Lock()
 
-# Mapping from ConfigPatchRequest field names → source_bank.json "defaults" keys
+# Mapping from ConfigPatchRequest field names → source_bank.json keys
 _PATCH_KEY_MAP: dict[str, str] = {
-    "duck_db": "duck_db",
-    "transition_max_ms": "transition_max_ms",
-    "fade_in_ms": "transition_fade_in_ms",
-    "fade_out_ms": "transition_fade_out_ms",
-    "silence_thresh_db": "silence_thresh_db_relative",
-    "min_silence_len_ms": "min_silence_len_ms",
-    "min_gap_safety_ms": "min_gap_safety_ms",
+    "duck_db":             "duck_db",
+    "transition_high_db":  "transition_high_db",
+    "transition_total_ms": "transition_total_ms",
+    "fade_in_ms":          "transition_fade_in_ms",
+    "fade_out_ms":         "transition_fade_out_ms",
+    "silence_thresh_db":   "silence_thresh_db_relative",
+    "min_silence_len_ms":  "min_silence_len_ms",
+    "segment_trim_pad_ms": "segment_trim_pad_ms",
 }
 
 
@@ -109,16 +110,22 @@ def _probe_asset(asset_path: Path, role: str) -> AssetMetadata:
 
 
 def _defaults_from_config(cfg: dict[str, Any]) -> SourceBankDefaults:
-    d = cfg.get("defaults", {})
+    """Extract mixing defaults from the flat source_bank.json structure."""
     return SourceBankDefaults(
-        duck_db=d["duck_db"],
-        transition_max_ms=d["transition_max_ms"],
-        transition_fade_in_ms=d["transition_fade_in_ms"],
-        transition_fade_out_ms=d["transition_fade_out_ms"],
-        silence_thresh_db_relative=d["silence_thresh_db_relative"],
-        min_silence_len_ms=d["min_silence_len_ms"],
-        min_gap_safety_ms=d["min_gap_safety_ms"],
+        duck_db=cfg.get("duck_db", -18),
+        transition_high_db=cfg.get("transition_high_db", -3),
+        transition_total_ms=cfg.get("transition_total_ms", 3000),
+        transition_fade_in_ms=cfg.get("transition_fade_in_ms", 1000),
+        transition_fade_out_ms=cfg.get("transition_fade_out_ms", 1000),
+        silence_thresh_db_relative=cfg.get("silence_thresh_db_relative", -16),
+        min_silence_len_ms=cfg.get("min_silence_len_ms", 400),
+        segment_trim_pad_ms=cfg.get("segment_trim_pad_ms", 100),
     )
+
+
+def _role_path_from_config(cfg: dict[str, Any], role: str) -> str:
+    """Return the relative path for a role from the flat config."""
+    return cfg.get(role, f"source_bank/{role}.mp3")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -133,19 +140,22 @@ def _defaults_from_config(cfg: dict[str, Any]) -> SourceBankDefaults:
 )
 async def upload_asset(role: str, file: UploadFile) -> AssetUploadResponse:
     """
-    Upload a new **intro**, **outro**, **fond** or **transition** file.
+    Upload a new **intro**, **outro**, or **fond** file.
 
     * Accepted formats: `mp3`, `wav`
     * Maximum size: 50 MB
     * Replaces any previously existing file for that role
     * Updates `source_bank.json` with the new relative path
+
+    There is no "transition" asset — transitions are built from the fond itself.
     """
     if role not in VALID_ROLES:
         raise HTTPException(
             status_code=422,
             detail=(
                 f"Unknown role '{role}'. "
-                f"Valid roles: {sorted(VALID_ROLES)}."
+                f"Valid roles: {sorted(VALID_ROLES)}. "
+                "Note: there is no 'transition' asset — transitions are built from the fond."
             ),
         )
 
@@ -183,8 +193,7 @@ async def upload_asset(role: str, file: UploadFile) -> AssetUploadResponse:
     rel_path = f"source_bank/{role}{ext}"
     with _json_lock:
         cfg = _read_config()
-        cfg.setdefault("roles", {}).setdefault(role, {})
-        cfg["roles"][role]["path"] = rel_path
+        cfg[role] = rel_path
         _write_config(cfg)
 
     # ── Duration warning ──────────────────────────────────────────────────────
@@ -223,17 +232,17 @@ def get_source_bank() -> SourceBankResponse:
     * File size (bytes)
     * Duration (ms and seconds)
     * Duration warning for intro/outro (recommended 4–10 s)
+
+    Only 3 assets are listed: intro, outro, fond.
     """
     with _json_lock:
         cfg = _read_config()
 
-    roles_cfg: dict[str, Any] = cfg.get("roles", {})
+    backend_root = settings.source_bank_config.parent.parent
     roles_meta: dict[str, AssetMetadata] = {}
 
     for role in VALID_ROLES:
-        role_data = roles_cfg.get(role, {})
-        rel_path: str = role_data.get("path", f"source_bank/{role}.mp3")
-        backend_root = settings.source_bank_config.parent.parent
+        rel_path = _role_path_from_config(cfg, role)
         asset_path = backend_root / rel_path
         roles_meta[role] = _probe_asset(asset_path, role)
 
@@ -257,18 +266,18 @@ def patch_config(body: ConfigPatchRequest) -> ConfigPatchResponse:
     Partially update the mixing defaults stored in `source_bank.json`.
 
     Only supplied fields are modified; omitted fields are left unchanged.
-    Changes take effect for the **next** bulletin assembled after this call —
-    no restart required.
+    Changes take effect for the **next** bulletin assembled after this call.
 
-    | Request field        | JSON key                   |
-    |----------------------|----------------------------|
-    | `duck_db`            | `duck_db`                  |
-    | `transition_max_ms`  | `transition_max_ms`        |
-    | `fade_in_ms`         | `transition_fade_in_ms`    |
-    | `fade_out_ms`        | `transition_fade_out_ms`   |
-    | `silence_thresh_db`  | `silence_thresh_db_relative` |
-    | `min_silence_len_ms` | `min_silence_len_ms`       |
-    | `min_gap_safety_ms`  | `min_gap_safety_ms`        |
+    | Request field          | JSON key                     |
+    |------------------------|------------------------------|
+    | `duck_db`              | `duck_db`                    |
+    | `transition_high_db`   | `transition_high_db`         |
+    | `transition_total_ms`  | `transition_total_ms`        |
+    | `fade_in_ms`           | `transition_fade_in_ms`      |
+    | `fade_out_ms`          | `transition_fade_out_ms`     |
+    | `silence_thresh_db`    | `silence_thresh_db_relative` |
+    | `min_silence_len_ms`   | `min_silence_len_ms`         |
+    | `segment_trim_pad_ms`  | `segment_trim_pad_ms`        |
     """
     patch_dict = body.model_dump(exclude_none=True)
     if not patch_dict:
@@ -279,12 +288,11 @@ def patch_config(body: ConfigPatchRequest) -> ConfigPatchResponse:
 
     with _json_lock:
         cfg = _read_config()
-        defaults = cfg.setdefault("defaults", {})
 
         updated: list[str] = []
         for req_key, value in patch_dict.items():
             json_key = _PATCH_KEY_MAP[req_key]
-            defaults[json_key] = value
+            cfg[json_key] = value
             updated.append(json_key)
 
         _write_config(cfg)

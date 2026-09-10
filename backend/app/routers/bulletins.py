@@ -3,8 +3,8 @@ FlowCast – Bulletin endpoints.
 
 Routes
 ------
-POST  /bulletins                Upload N vocal clips, launch assembly in background.
-GET   /bulletins/{job_id}       Job status + transitions count + final duration.
+POST  /bulletins                 Upload ONE raw vocal mp3, detect segments, start assembly.
+GET   /bulletins/{job_id}        Job status + segments/transitions count + final duration.
 GET   /bulletins/{job_id}/download  Stream the finished MP3.
 """
 
@@ -36,11 +36,9 @@ router = APIRouter(prefix="/bulletins", tags=["Bulletins"])
 
 def _sync_assemble(job_id: str) -> None:
     """
-    Synchronous assembly worker — runs in a ThreadPoolExecutor so it does not
-    block the asyncio event loop.
+    Synchronous assembly worker — runs in a ThreadPoolExecutor.
 
-    Updates the job store as it progresses through pending → processing → done
-    (or error).
+    Updates the job store: pending → processing → done | error.
     """
     job = job_store.get_job(job_id)
     if job is None:
@@ -52,7 +50,7 @@ def _sync_assemble(job_id: str) -> None:
 
     try:
         result = assemble_bulletin(
-            voice_clip_paths=job.voice_clip_paths,
+            raw_audio_path=job.voice_clip_paths[0],  # single file per spec
             config_path=settings.source_bank_config,
             output_path=output_path,
         )
@@ -60,12 +58,12 @@ def _sync_assemble(job_id: str) -> None:
             job_id,
             status=JobStatus.DONE,
             output_path=str(result.output_path),
+            segments_count=result.segments_count,
             transitions_count=result.transitions_count,
             duration_ms=result.duration_ms,
         )
 
     except FileNotFoundError as exc:
-        # A source-bank asset is missing
         job_store.update_job(
             job_id,
             status=JobStatus.ERROR,
@@ -76,7 +74,6 @@ def _sync_assemble(job_id: str) -> None:
         )
 
     except subprocess.CalledProcessError as exc:
-        # ffmpeg failure (loudness normalisation, export, …)
         stderr = (exc.stderr or "")[:800]
         job_store.update_job(
             job_id,
@@ -87,14 +84,13 @@ def _sync_assemble(job_id: str) -> None:
     except ValueError as exc:
         job_store.update_job(job_id, status=JobStatus.ERROR, error=str(exc))
 
-    except Exception as exc:  # noqa: BLE001 – broad catch for unknown errors
+    except Exception as exc:  # noqa: BLE001
         job_store.update_job(
             job_id,
             status=JobStatus.ERROR,
             error=f"Unexpected error: {type(exc).__name__}: {exc}",
         )
     finally:
-        # Clean up raw clips regardless of outcome
         finished_job = job_store.get_job(job_id)
         if finished_job and finished_job.status != JobStatus.DONE:
             for path in (finished_job.voice_clip_paths or []):
@@ -115,69 +111,40 @@ async def _run_async_assembly(job_id: str) -> None:
     "",
     response_model=BulletinCreateResponse,
     status_code=202,
-    summary="Upload vocal clips and start bulletin assembly",
+    summary="Upload a raw vocal audio file and start bulletin assembly",
 )
 async def create_bulletin(
-    files: list[UploadFile],
+    file: UploadFile,
     background_tasks: BackgroundTasks,
 ) -> BulletinCreateResponse:
     """
-    Accept **one or more** vocal clip uploads (mp3 or wav, max 500 MB each) and
-    immediately enqueue bulletin assembly as a background task.
+    Accept **one** raw vocal audio file (mp3 or wav, max 500 MB) and immediately
+    enqueue bulletin assembly as a background task.
+
+    The assembly pipeline:
+    1. Detect silences → split into speech segments automatically.
+    2. Trim each segment's edges individually.
+    3. Build continuous fond track with gain envelope (duck/high/duck).
+    4. Mix segments + transitions (fond-based, 3 000 ms each) + intro + outro.
+    5. Export stereo MP3 @ 192 kbps.
 
     Returns `job_id` to poll via `GET /bulletins/{job_id}`.
-
-    Assembly pipeline:
-    1. Concatenate clips in upload order.
-    2. Detect silences → insert transition jingles.
-    3. Loop background music (ducked) under the full track.
-    4. Crossfade intro → body → outro.
-    5. Export stereo MP3 @ 192 kbps.
     """
-    if not files:
-        raise HTTPException(
-            status_code=422,
-            detail="At least one vocal clip must be uploaded.",
-        )
-
-    # ── Validate & persist each clip ─────────────────────────────────────────
+    # ── Validate & persist the raw audio file ────────────────────────────────
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create the job first so we have a job_id for naming the files
     placeholder_job = job_store.create_job([])
     job_id = placeholder_job.job_id
 
-    saved_paths: list[str] = []
-    errors: list[str] = []
+    content, ext = await read_audio_upload(file, MAX_CLIP_BYTES, field_name="file")
 
-    for idx, upload in enumerate(files):
-        field_name = f"files[{idx}]"
-        try:
-            content, ext = await read_audio_upload(
-                upload, MAX_CLIP_BYTES, field_name=field_name
-            )
-        except HTTPException as exc:
-            errors.append(exc.detail)
-            continue
+    clip_path = settings.uploads_dir / f"{job_id}_raw{ext}"
+    clip_path.write_bytes(content)
 
-        clip_path = settings.uploads_dir / f"{job_id}_clip{idx:03d}{ext}"
-        clip_path.write_bytes(content)
-        saved_paths.append(str(clip_path))
-
-    # If any file failed validation, abort and clean up
-    if errors:
-        for p in saved_paths:
-            Path(p).unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=422,
-            detail={"message": "One or more clips failed validation.", "errors": errors},
-        )
-
-    # ── Update job with real paths and launch worker ──────────────────────────
+    # ── Update job with real path and launch worker ───────────────────────────
     job_store.update_job(
         job_id,
-        voice_clip_paths=saved_paths,
-        clip_count=len(saved_paths),
+        voice_clip_paths=[str(clip_path)],
     )
 
     background_tasks.add_task(_run_async_assembly, job_id)
@@ -185,10 +152,9 @@ async def create_bulletin(
     return BulletinCreateResponse(
         job_id=job_id,
         status=JobStatus.PENDING,
-        clip_count=len(saved_paths),
         message=(
             f"Job {job_id} accepted. "
-            f"{len(saved_paths)} clip(s) queued for assembly. "
+            f"Raw audio queued for segment detection and assembly. "
             f"Poll GET /bulletins/{job_id} for status."
         ),
     )
@@ -207,14 +173,14 @@ def get_bulletin_status(job_id: str) -> BulletinStatusResponse:
     """
     Return the current status of a bulletin assembly job.
 
-    | Status       | Meaning                              |
-    |--------------|--------------------------------------|
-    | `pending`    | Job accepted, not yet started        |
-    | `processing` | Assembly in progress                 |
-    | `done`       | MP3 ready – download via `.../download` |
-    | `error`      | Assembly failed – see `error` field  |
+    | Status       | Meaning                                  |
+    |--------------|------------------------------------------|
+    | `pending`    | Job accepted, not yet started            |
+    | `processing` | Assembly in progress                     |
+    | `done`       | MP3 ready – download via `.../download`  |
+    | `error`      | Assembly failed – see `error` field      |
 
-    Once `done`, `transitions_count` and `duration_ms`/`duration_s` are populated.
+    Once `done`, `segments_count`, `transitions_count`, and `duration_ms` are populated.
     """
     job = job_store.get_job(job_id)
     if job is None:
@@ -231,7 +197,7 @@ def get_bulletin_status(job_id: str) -> BulletinStatusResponse:
         job_id=job.job_id,
         status=job.status,
         created_at=job.created_at.isoformat(),
-        clip_count=job.clip_count,
+        segments_count=job.segments_count,
         transitions_count=job.transitions_count,
         duration_ms=job.duration_ms,
         duration_s=duration_s,
@@ -258,8 +224,7 @@ def download_bulletin(job_id: str) -> FileResponse:
     Stream the finished MP3 bulletin.
 
     Only available when `status == done`.
-    Returns `409 Conflict` if the job is still pending or processing,
-    and re-surfaces the error message if `status == error`.
+    Returns `409 Conflict` if the job is still pending or processing.
     """
     job = job_store.get_job(job_id)
     if job is None:
@@ -276,7 +241,7 @@ def download_bulletin(job_id: str) -> FileResponse:
             status_code=409,
             detail=(
                 f"Bulletin not ready yet (status: {job.status.value}). "
-                f"Try again later."
+                "Try again later."
             ),
         )
 

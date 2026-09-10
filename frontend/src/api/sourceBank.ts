@@ -14,12 +14,13 @@ export interface AssetMetadata {
 
 export interface SourceBankDefaults {
   duck_db: number;
-  transition_max_ms: number;
+  transition_high_db: number;
+  transition_total_ms: number;
   transition_fade_in_ms: number;
   transition_fade_out_ms: number;
   silence_thresh_db_relative: number;
   min_silence_len_ms: number;
-  min_gap_safety_ms: number;
+  segment_trim_pad_ms: number;
 }
 
 export interface SourceBankResponse {
@@ -29,12 +30,13 @@ export interface SourceBankResponse {
 
 export interface ConfigPatchRequest {
   duck_db?: number;
-  transition_max_ms?: number;
-  fade_in_ms?: number;
-  fade_out_ms?: number;
-  silence_thresh_db?: number;
+  transition_high_db?: number;
+  transition_total_ms?: number;
+  transition_fade_in_ms?: number;
+  transition_fade_out_ms?: number;
+  silence_thresh_db_relative?: number;
   min_silence_len_ms?: number;
-  min_gap_safety_ms?: number;
+  segment_trim_pad_ms?: number;
 }
 
 // We use the Vite proxy during local dev, or the direct URL

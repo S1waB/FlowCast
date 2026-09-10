@@ -1,48 +1,15 @@
 import React, { useState, useEffect, useRef } from "react";
-import {
-  DndContext,
-  closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  DragEndEvent,
-} from "@dnd-kit/core";
-import {
-  arrayMove,
-  SortableContext,
-  sortableKeyboardCoordinates,
-  verticalListSortingStrategy,
-  useSortable,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
 import WaveSurfer from "wavesurfer.js";
 import { createBulletin, getBulletinStatus, getDownloadUrl, BulletinStatusResponse } from "../api/bulletins";
 
-// ── TYPES ──────────────────────────────────────────────────────────────────
-
-interface Clip {
-  id: string;
-  file: File;
-  url: string;
-}
-
-// ── MAIN PAGE COMPONENT ────────────────────────────────────────────────────
-
 export default function NewBulletinPage() {
-  const [clips, setClips] = useState<Clip[]>([]);
+  const [file, setFile] = useState<{ raw: File, url: string } | null>(null);
   const [dragActive, setDragActive] = useState(false);
 
   // Job state
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<BulletinStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  // Sensors for dnd-kit
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
-  );
 
   // Poll for job status
   useEffect(() => {
@@ -63,13 +30,12 @@ export default function NewBulletinPage() {
     };
 
     intervalId = setInterval(poll, 2000);
-    // Initial fetch
     poll();
 
     return () => clearInterval(intervalId);
   }, [jobId]);
 
-  // ── Drag & Drop Handlers (Files) ──
+  // ── Drag & Drop Handlers ──
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -83,64 +49,43 @@ export default function NewBulletinPage() {
     setDragActive(false);
   };
 
-  const addFiles = (files: FileList | File[]) => {
-    const newClips: Clip[] = Array.from(files)
-      .filter((file) => file.name.toLowerCase().endsWith(".mp3") || file.name.toLowerCase().endsWith(".wav"))
-      .map((file) => ({
-        id: crypto.randomUUID(),
-        file,
-        url: URL.createObjectURL(file),
-      }));
-    setClips((prev) => [...prev, ...newClips]);
+  const addFile = (rawFile: File) => {
+    if (!rawFile.name.toLowerCase().endsWith(".mp3") && !rawFile.name.toLowerCase().endsWith(".wav")) {
+      setError("Format non supporté. Veuillez uploader un .mp3 ou .wav");
+      return;
+    }
+    if (file) URL.revokeObjectURL(file.url);
+    setFile({
+      raw: rawFile,
+      url: URL.createObjectURL(rawFile)
+    });
   };
 
   const handleDropFiles = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      addFiles(e.dataTransfer.files);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      addFile(e.dataTransfer.files[0]);
     }
   };
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      addFiles(e.target.files);
-    }
-  };
-
-  const removeClip = (id: string) => {
-    setClips((prev) => {
-      const clip = prev.find((c) => c.id === id);
-      if (clip) URL.revokeObjectURL(clip.url);
-      return prev.filter((c) => c.id !== id);
-    });
-  };
-
-  // ── Dnd-kit Handlers (Reorder) ──
-
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
-    if (over && active.id !== over.id) {
-      setClips((items) => {
-        const oldIndex = items.findIndex((i) => i.id === active.id);
-        const newIndex = items.findIndex((i) => i.id === over.id);
-        return arrayMove(items, oldIndex, newIndex);
-      });
+    if (e.target.files && e.target.files[0]) {
+      addFile(e.target.files[0]);
     }
   };
 
   // ── Generation ──
 
   const handleGenerate = async () => {
-    if (clips.length === 0) return;
+    if (!file) return;
     setError(null);
     setJobId(null);
     setJobStatus(null);
     
     try {
-      const files = clips.map((c) => c.file);
-      const res = await createBulletin(files);
+      const res = await createBulletin(file.raw);
       setJobId(res.job_id);
     } catch (err: any) {
       setError(err.message);
@@ -151,54 +96,62 @@ export default function NewBulletinPage() {
     <div className="max-w-4xl mx-auto p-4 space-y-8 animate-fadeSlideDown">
       <header className="mb-6">
         <h1 className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-br from-white to-accent">Nouveau Bulletin</h1>
-        <p className="text-muted mt-2">Uploadez vos clips vocaux, réordonnez-les et lancez la génération automatique.</p>
+        <p className="text-muted mt-2">Uploadez votre enregistrement brut, l'IA détectera les silences et mixera le bulletin automatiquement.</p>
       </header>
 
       {/* Main Dropzone */}
-      {!jobId && (
-        <>
-          <div
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDropFiles}
-            className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
-              dragActive ? "border-accent bg-accent/5" : "border-border bg-surface2"
-            }`}
-          >
-            <div className="text-4xl mb-4">📥</div>
-            <h3 className="text-lg font-semibold text-text mb-2">Glissez vos fichiers vocaux ici</h3>
-            <p className="text-sm text-muted mb-4">Formats acceptés : .mp3, .wav (max 500 MB / fichier)</p>
-            <label className="cursor-pointer px-4 py-2 bg-surface text-text font-medium rounded-md border border-border hover:bg-surface2 transition-colors">
-              Ou parcourez vos fichiers
-              <input type="file" multiple accept=".mp3,.wav" className="hidden" onChange={handleFileInput} />
-            </label>
-          </div>
+      {!jobId && !file && (
+        <div
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDropFiles}
+          className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
+            dragActive ? "border-accent bg-accent/5" : "border-border bg-surface2"
+          }`}
+        >
+          <div className="text-4xl mb-4">🎤</div>
+          <h3 className="text-lg font-semibold text-text mb-2">Glissez votre fichier vocal brut ici</h3>
+          <p className="text-sm text-muted mb-4">1 seul fichier contenant tous les clips avec des pauses (Formats : .mp3, .wav)</p>
+          <label className="cursor-pointer px-4 py-2 bg-surface text-text font-medium rounded-md border border-border hover:bg-surface2 transition-colors">
+            Ou parcourez vos fichiers
+            <input type="file" accept=".mp3,.wav" className="hidden" onChange={handleFileInput} />
+          </label>
+        </div>
+      )}
 
-          {/* Reorderable List */}
-          {clips.length > 0 && (
-            <div className="fc-card space-y-4">
-              <h2 className="text-xl font-bold text-text flex items-center justify-between">
-                <span>Clips sélectionnés ({clips.length})</span>
-                <button
-                  onClick={handleGenerate}
-                  className="px-4 py-2 bg-accent hover:bg-accent/80 text-white font-medium rounded-md transition-colors shadow-lg shadow-accent/20"
-                >
-                  ✨ Générer le bulletin
-                </button>
-              </h2>
-              
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-                <SortableContext items={clips.map((c) => c.id)} strategy={verticalListSortingStrategy}>
-                  <div className="space-y-2">
-                    {clips.map((clip, index) => (
-                      <SortableClipItem key={clip.id} clip={clip} index={index} onRemove={() => removeClip(clip.id)} />
-                    ))}
-                  </div>
-                </SortableContext>
-              </DndContext>
+      {/* File preview */}
+      {!jobId && file && (
+        <div className="fc-card space-y-4">
+          <div className="flex justify-between items-center">
+            <h2 className="text-xl font-bold text-text">Enregistrement brut</h2>
+            <button
+              onClick={() => {
+                URL.revokeObjectURL(file.url);
+                setFile(null);
+              }}
+              className="text-sm text-error hover:underline"
+            >
+              Changer de fichier
+            </button>
+          </div>
+          
+          <div className="bg-surface p-4 rounded-lg border border-border shadow-sm flex flex-col gap-4">
+            <div className="flex justify-between items-center text-sm">
+              <span className="font-medium text-text truncate block">{file.raw.name}</span>
+              <span className="text-muted flex-shrink-0">{(file.raw.size / 1024 / 1024).toFixed(2)} MB</span>
             </div>
-          )}
-        </>
+            <div className="w-full h-24 bg-bg rounded overflow-hidden">
+              <MiniWaveform url={file.url} />
+            </div>
+          </div>
+          
+          <button
+            onClick={handleGenerate}
+            className="w-full py-3 mt-4 bg-accent hover:bg-accent/80 text-white font-bold rounded-md transition-colors shadow-lg shadow-accent/20"
+          >
+            ✨ Générer le bulletin mixé
+          </button>
+        </div>
       )}
 
       {/* Error state */}
@@ -206,7 +159,7 @@ export default function NewBulletinPage() {
         <div className="fc-card bg-error/10 border-error/20">
           <h2 className="text-error font-bold mb-2">Erreur</h2>
           <p className="text-sm text-error/80">{error}</p>
-          <button onClick={() => { setError(null); setJobId(null); }} className="mt-4 px-4 py-2 bg-surface text-text rounded-md border border-border">Réessayer</button>
+          <button onClick={() => setError(null)} className="mt-4 px-4 py-2 bg-surface text-text rounded-md border border-border">Réessayer</button>
         </div>
       )}
 
@@ -215,7 +168,8 @@ export default function NewBulletinPage() {
         <JobProgressView jobStatus={jobStatus} jobId={jobId} onReset={() => {
           setJobId(null);
           setJobStatus(null);
-          setClips([]);
+          if (file) URL.revokeObjectURL(file.url);
+          setFile(null);
         }} />
       )}
 
@@ -223,60 +177,9 @@ export default function NewBulletinPage() {
   );
 }
 
-// ── SORTABLE CLIP ITEM ─────────────────────────────────────────────────────
-
-function SortableClipItem({ clip, index, onRemove }: { clip: Clip; index: number; onRemove: () => void }) {
-  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: clip.id });
-  const [duration, setDuration] = useState<string>("...");
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  };
-
-  const formatSize = (bytes: number) => (bytes / 1024 / 1024).toFixed(2) + " MB";
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className="flex items-center gap-4 p-3 bg-surface border border-border rounded-lg shadow-sm group hover:border-accent/50 transition-colors"
-    >
-      {/* Drag handle */}
-      <button {...attributes} {...listeners} className="cursor-grab p-2 text-muted hover:text-text active:cursor-grabbing">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/></svg>
-      </button>
-
-      <div className="flex-shrink-0 w-8 text-center text-muted font-mono font-medium text-sm">
-        #{index + 1}
-      </div>
-
-      <div className="flex-grow min-w-0 flex flex-col justify-center">
-        <span className="font-medium text-text truncate block">{clip.file.name}</span>
-        <div className="flex gap-3 text-xs text-muted mt-1">
-          <span>{formatSize(clip.file.size)}</span>
-          <span>{duration}</span>
-        </div>
-      </div>
-
-      <div className="w-32 h-10 flex-shrink-0 bg-bg rounded overflow-hidden">
-        <MiniWaveform url={clip.url} onDuration={(sec) => {
-          const m = Math.floor(sec / 60);
-          const s = Math.floor(sec % 60).toString().padStart(2, "0");
-          setDuration(`${m}:${s}`);
-        }} />
-      </div>
-
-      <button onClick={onRemove} className="p-2 text-muted hover:text-error transition-colors rounded-full hover:bg-error/10 ml-2" title="Supprimer">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-      </button>
-    </div>
-  );
-}
-
 // ── MINI WAVEFORM ──────────────────────────────────────────────────────────
 
-function MiniWaveform({ url, onDuration }: { url: string; onDuration: (duration: number) => void }) {
+function MiniWaveform({ url }: { url: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const wavesurfer = useRef<WaveSurfer | null>(null);
 
@@ -287,23 +190,20 @@ function MiniWaveform({ url, onDuration }: { url: string; onDuration: (duration:
       container: containerRef.current,
       waveColor: 'rgba(255, 255, 255, 0.2)',
       progressColor: 'rgba(255, 255, 255, 0.5)',
-      height: 40,
+      height: 96,
       barWidth: 2,
       barGap: 1,
       barRadius: 2,
-      interact: false,
+      interact: true,
+      cursorColor: 'white'
     });
 
     wavesurfer.current.load(url);
 
-    wavesurfer.current.on('ready', () => {
-      onDuration(wavesurfer.current?.getDuration() || 0);
-    });
-
     return () => {
       wavesurfer.current?.destroy();
     };
-  }, [url, onDuration]);
+  }, [url]);
 
   return <div ref={containerRef} className="w-full h-full" />;
 }
@@ -353,8 +253,8 @@ function JobProgressView({ jobStatus, jobId, onReset }: { jobStatus: BulletinSta
               </p>
             </div>
             <div className="bg-surface2 p-4 rounded-lg border border-border">
-              <p className="text-xs text-muted mb-1">Transitions insérées</p>
-              <p className="text-xl font-bold text-text">{jobStatus.transitions_count}</p>
+              <p className="text-xs text-muted mb-1">Segments vocaux détectés</p>
+              <p className="text-xl font-bold text-text">{jobStatus.segments_count}</p>
             </div>
           </div>
 

@@ -1,5 +1,5 @@
 """
-conftest.py – shared fixtures for FlowCast audio engine tests.
+conftest.py – shared fixtures for FlowCast audio engine tests (v2).
 
 All audio is synthesised in memory; no real MP3 files needed.
 """
@@ -22,10 +22,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 SPEECH_VOLUME_DB: float = -6.0
 """Loud enough to be unambiguously above any silence threshold used in tests."""
 
-TRANSITION_VOLUME_DB: float = -20.0
-"""Quiet transition asset – it's overlaid, not mixed for loudness."""
-
-BED_VOLUME_DB: float = -20.0
+FOND_VOLUME_DB: float = -12.0
+"""Background music reference level (before ducking is applied)."""
 
 
 def sine_tone(freq: int, duration_ms: int, volume_db: float) -> AudioSegment:
@@ -37,41 +35,41 @@ def sine_tone(freq: int, duration_ms: int, volume_db: float) -> AudioSegment:
 
 @pytest.fixture
 def speech() -> AudioSegment:
-    """2 000 ms of clear speech-like tone."""
+    """2 000 ms of clear speech-like tone at -6 dBFS."""
     return sine_tone(440, 2_000, SPEECH_VOLUME_DB)
 
 
 @pytest.fixture
-def short_silence() -> AudioSegment:
-    """1 000 ms of true silence (< transition_max_ms)."""
-    return AudioSegment.silent(duration=1_000)
-
-
-@pytest.fixture
-def long_silence() -> AudioSegment:
-    """6 000 ms of true silence (> transition_max_ms of 5 000 ms)."""
-    return AudioSegment.silent(duration=6_000)
-
-
-@pytest.fixture
-def track_long_silence(speech: AudioSegment, long_silence: AudioSegment) -> AudioSegment:
-    """speech | 6 s silence | speech  (total 10 000 ms)."""
-    return speech + long_silence + speech
-
-
-@pytest.fixture
-def track_short_silence(speech: AudioSegment, short_silence: AudioSegment) -> AudioSegment:
-    """speech | 1 s silence | speech  (total 5 000 ms)."""
-    return speech + short_silence + speech
-
-
-@pytest.fixture
-def transition_asset() -> AudioSegment:
-    """7 000 ms transition asset — longer than transition_max_ms to verify capping."""
-    return sine_tone(880, 7_000, TRANSITION_VOLUME_DB)
-
-
-@pytest.fixture
 def fond_asset() -> AudioSegment:
-    """3 000 ms loopable background music clip."""
-    return sine_tone(220, 3_000, BED_VOLUME_DB)
+    """3 000 ms loopable background music clip at -12 dBFS."""
+    return sine_tone(220, 3_000, FOND_VOLUME_DB)
+
+
+@pytest.fixture
+def raw_two_segments(speech: AudioSegment) -> AudioSegment:
+    """speech | 1 200 ms silence | speech  — exactly 2 speech segments."""
+    return speech + AudioSegment.silent(duration=1_200) + speech
+
+
+@pytest.fixture
+def raw_three_segments(speech: AudioSegment) -> AudioSegment:
+    """speech | 800 ms silence | speech | 2 000 ms silence | speech — 3 segments."""
+    return (
+        speech
+        + AudioSegment.silent(duration=800)
+        + speech
+        + AudioSegment.silent(duration=2_000)
+        + speech
+    )
+
+
+@pytest.fixture
+def raw_leading_trailing_silence(speech: AudioSegment) -> AudioSegment:
+    """500 ms silence | speech | 800 ms silence | speech | 500 ms silence."""
+    return (
+        AudioSegment.silent(duration=500)
+        + speech
+        + AudioSegment.silent(duration=800)
+        + speech
+        + AudioSegment.silent(duration=500)
+    )

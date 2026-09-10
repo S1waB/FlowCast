@@ -10,12 +10,10 @@ import {
 
 const getUrl = (path: string) => import.meta.env.DEV ? `/api${path}` : `${(import.meta.env.VITE_API_URL || "/api").replace(/\/$/, "")}${path}`;
 
-
 const ROLES = [
   { id: "intro", title: "Intro", desc: "Jingle d'ouverture" },
   { id: "outro", title: "Outro", desc: "Jingle de fin" },
-  { id: "fond", title: "Fond musical", desc: "Musique de fond (loop/duck)" },
-  { id: "transition", title: "Transition", desc: "Virgule inter-clips" },
+  { id: "fond", title: "Fond musical", desc: "Musique de fond (sert aussi aux transitions)" },
 ];
 
 export default function SourceBankPage() {
@@ -63,7 +61,7 @@ export default function SourceBankPage() {
     <div className="max-w-6xl mx-auto p-4 space-y-8 animate-fadeSlideDown">
       <header className="mb-8">
         <h1 className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-br from-white to-accent">Banque Source</h1>
-        <p className="text-muted mt-2">Gérez les assets audio (intro, outro, fond, transition) et les paramètres de mixage.</p>
+        <p className="text-muted mt-2">Gérez les assets audio (intro, outro, fond) et les paramètres de mixage.</p>
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -175,12 +173,13 @@ function AssetCard({ title, desc, meta, onUpload }: { title: string, desc: strin
 function ConfigPanel({ defaults, onSaved }: { defaults: SourceBankDefaults, onSaved: () => void }) {
   const [form, setForm] = useState({
     duck_db: defaults.duck_db,
-    transition_max_ms: defaults.transition_max_ms,
-    fade_in_ms: defaults.transition_fade_in_ms,
-    fade_out_ms: defaults.transition_fade_out_ms,
-    silence_thresh_db: defaults.silence_thresh_db_relative,
+    transition_high_db: defaults.transition_high_db,
+    transition_total_ms: defaults.transition_total_ms,
+    transition_fade_in_ms: defaults.transition_fade_in_ms,
+    transition_fade_out_ms: defaults.transition_fade_out_ms,
+    silence_thresh_db_relative: defaults.silence_thresh_db_relative,
     min_silence_len_ms: defaults.min_silence_len_ms,
-    min_gap_safety_ms: defaults.min_gap_safety_ms,
+    segment_trim_pad_ms: defaults.segment_trim_pad_ms,
   });
 
   const [saving, setSaving] = useState(false);
@@ -209,8 +208,8 @@ function ConfigPanel({ defaults, onSaved }: { defaults: SourceBankDefaults, onSa
     <form onSubmit={handleSubmit} className="fc-card max-w-none">
       <div className="flex justify-between items-center mb-6 border-b border-border pb-4">
         <div>
-          <h2 className="text-xl font-bold text-text">Paramètres de mixage par défaut</h2>
-          <p className="text-sm text-muted">Ces valeurs s'appliquent aux futurs bulletins générés.</p>
+          <h2 className="text-xl font-bold text-text">Paramètres de mixage</h2>
+          <p className="text-sm text-muted">Ajustez le volume et les transitions du fond musical.</p>
         </div>
         <button type="submit" disabled={saving} className="px-4 py-2 bg-accent hover:bg-accent/80 text-white font-medium rounded-md transition-colors disabled:opacity-50">
           {saving ? "Sauvegarde..." : "Sauvegarder"}
@@ -220,25 +219,15 @@ function ConfigPanel({ defaults, onSaved }: { defaults: SourceBankDefaults, onSa
       {error && <div className="mb-4 text-sm text-error bg-error/10 p-3 rounded border border-error/20">{error}</div>}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <ConfigField label="Ducking Fond (dB)" name="duck_db" value={form.duck_db} onChange={handleChange} min={-60} max={0} step={1} hint="Niveau du fond musical (-16 recommandé)" />
+        <ConfigField label="Ducking Fond (dB)" name="duck_db" value={form.duck_db} onChange={handleChange} min={-60} max={0} step={1} hint="Niveau sous la voix (-18 recommandé)" />
+        <ConfigField label="Pic Transition (dB)" name="transition_high_db" value={form.transition_high_db} onChange={handleChange} min={-60} max={0} step={1} hint="Niveau pendant la transition (-3)" />
+        <ConfigField label="Durée Transition (ms)" name="transition_total_ms" value={form.transition_total_ms} onChange={handleChange} min={500} max={10000} step={100} hint="Durée totale insérée (3000)" />
+        <ConfigField label="Fade In Transition (ms)" name="transition_fade_in_ms" value={form.transition_fade_in_ms} onChange={handleChange} min={0} max={5000} step={100} hint="Temps de montée (1000)" />
+        <ConfigField label="Fade Out Transition (ms)" name="transition_fade_out_ms" value={form.transition_fade_out_ms} onChange={handleChange} min={0} max={5000} step={100} hint="Temps de descente (1000)" />
         
-        <div className="space-y-1">
-          <label className="text-sm font-medium text-text block">Durée Transition Max (ms)</label>
-          <input 
-            type="number" name="transition_max_ms" value={form.transition_max_ms} onChange={handleChange} min={500} max={30000} step={100}
-            className="w-full bg-surface2 border border-border rounded-md px-3 py-2 text-text text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none"
-          />
-          {form.transition_max_ms > 5000 && (
-            <p className="text-xs text-error mt-1">⚠️ Plus de 5000ms peut causer des chevauchements indésirables.</p>
-          )}
-        </div>
-
-        <ConfigField label="Fade In Transition (ms)" name="fade_in_ms" value={form.fade_in_ms} onChange={handleChange} min={0} max={5000} step={100} hint="Durée du fondu entrant" />
-        <ConfigField label="Fade Out Transition (ms)" name="fade_out_ms" value={form.fade_out_ms} onChange={handleChange} min={0} max={5000} step={100} hint="Durée du fondu sortant" />
-        
-        <ConfigField label="Seuil Silence (dB relatif)" name="silence_thresh_db" value={form.silence_thresh_db} onChange={handleChange} min={-60} max={-1} step={1} hint="Relatif au volume moyen vocal (-16)" />
-        <ConfigField label="Durée Silence Min (ms)" name="min_silence_len_ms" value={form.min_silence_len_ms} onChange={handleChange} min={50} max={10000} step={50} hint="Temps min pour détecter une pause (400)" />
-        <ConfigField label="Marge Sécurité (ms)" name="min_gap_safety_ms" value={form.min_gap_safety_ms} onChange={handleChange} min={0} max={1000} step={10} hint="Marge de sécurité avant/après la voix (100)" />
+        <ConfigField label="Seuil Silence (dB relatif)" name="silence_thresh_db_relative" value={form.silence_thresh_db_relative} onChange={handleChange} min={-60} max={-1} step={1} hint="Relatif à la voix moyenne (-16)" />
+        <ConfigField label="Durée Silence Min (ms)" name="min_silence_len_ms" value={form.min_silence_len_ms} onChange={handleChange} min={50} max={10000} step={50} hint="Détection des pauses (400)" />
+        <ConfigField label="Marge Coupe (ms)" name="segment_trim_pad_ms" value={form.segment_trim_pad_ms} onChange={handleChange} min={0} max={1000} step={10} hint="Marge conservée (100)" />
       </div>
     </form>
   );

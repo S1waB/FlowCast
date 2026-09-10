@@ -2,8 +2,6 @@
 FlowCast – Thread-safe in-memory job store.
 
 In production, replace with Redis or a DB-backed queue.
-The store is a module-level singleton; all FastAPI workers in the same process
-share it safely via a threading.Lock.
 """
 
 from __future__ import annotations
@@ -18,16 +16,11 @@ from typing import Optional
 from app.schemas import JobStatus
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Job model
-# ─────────────────────────────────────────────────────────────────────────────
-
 @dataclass
 class BulletinJob:
     """Mutable job record stored in memory."""
 
     job_id: str
-    clip_count: int
     voice_clip_paths: list[str] = field(default_factory=list)
 
     status: JobStatus = JobStatus.PENDING
@@ -35,15 +28,12 @@ class BulletinJob:
         default_factory=lambda: datetime.now(tz=timezone.utc)
     )
 
+    segments_count: Optional[int] = None
     transitions_count: Optional[int] = None
     duration_ms: Optional[int] = None
     output_path: Optional[str] = None
     error: Optional[str] = None
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Store operations
-# ─────────────────────────────────────────────────────────────────────────────
 
 _store: dict[str, BulletinJob] = {}
 _lock = threading.Lock()
@@ -54,7 +44,6 @@ def create_job(voice_clip_paths: list[str | Path]) -> BulletinJob:
     paths = [str(p) for p in voice_clip_paths]
     job = BulletinJob(
         job_id=str(uuid.uuid4()),
-        clip_count=len(paths),
         voice_clip_paths=paths,
     )
     with _lock:
@@ -69,12 +58,7 @@ def get_job(job_id: str) -> Optional[BulletinJob]:
 
 
 def update_job(job_id: str, **kwargs: object) -> None:
-    """
-    Update one or more fields on a job record atomically.
-
-    Unknown field names are silently ignored to avoid hard failures on schema
-    changes.
-    """
+    """Update one or more fields on a job record atomically."""
     with _lock:
         job = _store.get(job_id)
         if job is None:

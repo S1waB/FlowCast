@@ -14,7 +14,8 @@ from pydantic import BaseModel, Field
 # Source-bank
 # ─────────────────────────────────────────────────────────────────────────────
 
-VALID_ROLES: frozenset[str] = frozenset({"intro", "outro", "fond", "transition"})
+# Only 3 swappable assets — no "transition" asset per spec
+VALID_ROLES: frozenset[str] = frozenset({"intro", "outro", "fond"})
 
 # Duration bounds (ms) considered "reasonable" for intro/outro
 INTRO_OUTRO_MIN_MS: int = 4_000
@@ -35,15 +36,16 @@ class AssetMetadata(BaseModel):
 
 
 class SourceBankDefaults(BaseModel):
-    """Mirror of the ``defaults`` block in source_bank.json."""
+    """Mirror of the mixing parameters in source_bank.json."""
 
     duck_db: float
-    transition_max_ms: int
+    transition_high_db: float
+    transition_total_ms: int
     transition_fade_in_ms: int
     transition_fade_out_ms: int
     silence_thresh_db_relative: float
     min_silence_len_ms: int
-    min_gap_safety_ms: int
+    segment_trim_pad_ms: int
 
 
 class SourceBankResponse(BaseModel):
@@ -70,8 +72,6 @@ class ConfigPatchRequest(BaseModel):
     Partial update for PATCH /source-bank/config.
 
     All fields are optional; only provided fields are modified.
-    Short names (fade_in_ms, fade_out_ms, silence_thresh_db) are mapped to
-    their canonical JSON keys (transition_fade_in_ms, …, silence_thresh_db_relative).
     """
 
     duck_db: Optional[float] = Field(
@@ -80,8 +80,14 @@ class ConfigPatchRequest(BaseModel):
         le=0.0,
         description="Background music ducking level in dB (must be ≤ 0).",
     )
-    transition_max_ms: Optional[int] = Field(
-        None, ge=500, le=30_000, description="Max transition duration in ms."
+    transition_high_db: Optional[float] = Field(
+        None,
+        ge=-40.0,
+        le=0.0,
+        description="Peak fond volume during transition in dB.",
+    )
+    transition_total_ms: Optional[int] = Field(
+        None, ge=500, le=30_000, description="Fixed transition duration in ms (default 3000)."
     )
     fade_in_ms: Optional[int] = Field(
         None, ge=0, le=5_000, description="Transition fade-in duration in ms."
@@ -93,15 +99,13 @@ class ConfigPatchRequest(BaseModel):
         None,
         ge=-60.0,
         le=-1.0,
-        description=(
-            "Silence threshold relative to clip mean dBFS (must be negative)."
-        ),
+        description="Silence threshold relative to clip mean dBFS (must be negative).",
     )
     min_silence_len_ms: Optional[int] = Field(
         None, ge=50, le=10_000, description="Minimum silence length in ms."
     )
-    min_gap_safety_ms: Optional[int] = Field(
-        None, ge=0, le=1_000, description="Safety margin before/after speech in ms."
+    segment_trim_pad_ms: Optional[int] = Field(
+        None, ge=0, le=1_000, description="Safety pad kept on each edge when trimming segments."
     )
 
 
@@ -128,7 +132,6 @@ class BulletinCreateResponse(BaseModel):
 
     job_id: str
     status: JobStatus
-    clip_count: int
     message: str
 
 
@@ -139,9 +142,10 @@ class BulletinStatusResponse(BaseModel):
     status: JobStatus
     created_at: str
     """ISO-8601 UTC timestamp."""
-    clip_count: int
+    segments_count: Optional[int] = None
+    """Number of speech segments detected (available once done)."""
     transitions_count: Optional[int] = None
-    """Number of transition jingles inserted (available once done)."""
+    """Number of transitions inserted = segments_count - 1 (available once done)."""
     duration_ms: Optional[int] = None
     """Final bulletin duration in ms (available once done)."""
     duration_s: Optional[float] = None

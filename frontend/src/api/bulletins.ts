@@ -10,7 +10,7 @@ export type JobStatus = "pending" | "processing" | "done" | "error";
 export interface BulletinCreateResponse {
   job_id: string;
   status: JobStatus;
-  clip_count: number;
+  segments_count?: number;
   message: string;
 }
 
@@ -18,18 +18,16 @@ export interface BulletinStatusResponse {
   job_id: string;
   status: JobStatus;
   created_at: string;
-  clip_count: number;
+  segments_count?: number;
   transitions_count?: number;
   duration_ms?: number;
   duration_s?: number;
   error?: string;
 }
 
-export async function createBulletin(files: File[]): Promise<BulletinCreateResponse> {
+export async function createBulletin(file: File): Promise<BulletinCreateResponse> {
   const formData = new FormData();
-  files.forEach(file => {
-    formData.append("files", file);
-  });
+  formData.append("file", file); // Match backend single file upload
   
   const res = await fetch(getUrl("/bulletins"), {
     method: "POST",

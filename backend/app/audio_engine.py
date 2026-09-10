@@ -1,24 +1,34 @@
 """
-FlowCast – Audio Engine
-=======================
-All audio-processing primitives for the bulletin auto-mixer.
+FlowCast – Audio Engine (v2)
+============================
+Implements the exact algorithm from the specification:
+
+  STEP 1 – detect_and_split_by_silence
+      Detect all silences in the raw audio and extract speech segments
+      (the intervals between silences), excluding any silence.
+
+  STEP 2 – trim_segment_edges
+      For each individual speech segment, strip residual silence from its
+      own leading and trailing edges (with a segment_trim_pad_ms guard).
+
+  STEP 3 – assemble_bulletin
+      a) Intro (fixed, no fond underneath)
+      b) For each segment i:
+           – fond at duck_db underneath
+           – if i+1 exists: TRANSITION of exactly transition_total_ms,
+             built from the fond itself (no external file):
+               fond rises duck_db → transition_high_db (fade-in)
+               stays high
+               falls back to duck_db (fade-out)
+      c) Outro (crossfade from fond fade-out)
 
 Public API
 ----------
-detect_silences(audio, silence_thresh_db, min_silence_len_ms)
-    → list[tuple[int, int]]
-
-insert_transitions(voice_track, transition_asset, cfg)
-    → tuple[AudioSegment, list[TransitionInfo]]
-
-build_bed(fond_asset, total_duration_ms, duck_db)
-    → AudioSegment
-
-assemble_bulletin(voice_clip_paths, config_path, output_path, *, ...)
-    → Path
-
-loudness_normalize(input_path, output_path, target_lufs)
-    → Path
+detect_and_split_by_silence(raw_audio, cfg) -> list[AudioSegment]
+trim_segment_edges(segment, pad_ms) -> AudioSegment
+build_bed_with_envelope(fond_asset, segment_durations, cfg) -> AudioSegment
+assemble_bulletin(raw_audio_path, config_path, output_path) -> AssemblyResult
+loudness_normalize(input_path, output_path, target_lufs) -> Path
 """
 
 from __future__ import annotations
@@ -40,361 +50,442 @@ from pydub.silence import detect_silence as _pydub_detect_silence
 @dataclass(frozen=True)
 class MixConfig:
     """
-    Mixing parameters loaded from source_bank.json (or set programmatically).
+    Mixing parameters loaded from source_bank.json.
 
-    All *_ms fields are in milliseconds; *_db fields are in dBFS.
+    All *_ms fields are milliseconds; *_db fields are dBFS.
     """
 
-    duck_db: float = -16.0
-    """Gain applied to the background bed (duck level)."""
+    # Asset paths (relative to backend root)
+    intro_path: str = "source_bank/intro.mp3"
+    outro_path: str = "source_bank/outro.mp3"
+    fond_path:  str = "source_bank/fond.mp3"
 
-    transition_max_ms: int = 5_000
-    """Hard cap on the transition clip duration placed in a silence."""
+    # Ducking & transition envelope
+    duck_db: float = -18.0
+    """Fond gain under speech segments."""
+
+    transition_high_db: float = -3.0
+    """Fond peak gain during a transition."""
+
+    transition_total_ms: int = 3_000
+    """Total transition duration — always exactly this, regardless of original silence length."""
 
     transition_fade_in_ms: int = 1_000
-    """Desired fade-in on every transition (may be shorter on narrow silences)."""
+    """Fade from duck_db → transition_high_db at the start of a transition."""
 
     transition_fade_out_ms: int = 1_000
-    """Desired fade-out on every transition (may be shorter on narrow silences)."""
+    """Fade from transition_high_db → duck_db at the end of a transition."""
 
+    # Silence detection
     silence_thresh_db_relative: float = -16.0
-    """Silence threshold *relative* to the clip's mean dBFS (always negative)."""
+    """Silence threshold relative to the clip's mean dBFS (always negative)."""
 
     min_silence_len_ms: int = 400
-    """Minimum gap length to be reported as a silence."""
+    """Minimum contiguous silence length (ms) to be recognised as a gap."""
 
-    min_gap_safety_ms: int = 100
-    """Minimum margin kept between the transition edge and the nearest speech."""
+    # Segment trimming
+    segment_trim_pad_ms: int = 100
+    """Safety pad kept at each edge when trimming individual segment silences."""
 
     # ── factory ──────────────────────────────────────────────────────────────
 
     @classmethod
     def from_json(cls, path: str | Path) -> "MixConfig":
-        """Instantiate from a ``source_bank.json`` file."""
+        """Load from source_bank.json (flat structure per spec)."""
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
-        d = raw.get("defaults", {})
         return cls(
-            duck_db=float(d.get("duck_db", cls.duck_db)),
-            transition_max_ms=int(d.get("transition_max_ms", cls.transition_max_ms)),
-            transition_fade_in_ms=int(d.get("transition_fade_in_ms", cls.transition_fade_in_ms)),
-            transition_fade_out_ms=int(d.get("transition_fade_out_ms", cls.transition_fade_out_ms)),
+            intro_path=raw.get("intro", cls.intro_path),
+            outro_path=raw.get("outro", cls.outro_path),
+            fond_path=raw.get("fond", cls.fond_path),
+            duck_db=float(raw.get("duck_db", cls.duck_db)),
+            transition_high_db=float(raw.get("transition_high_db", cls.transition_high_db)),
+            transition_total_ms=int(raw.get("transition_total_ms", cls.transition_total_ms)),
+            transition_fade_in_ms=int(raw.get("transition_fade_in_ms", cls.transition_fade_in_ms)),
+            transition_fade_out_ms=int(raw.get("transition_fade_out_ms", cls.transition_fade_out_ms)),
             silence_thresh_db_relative=float(
-                d.get("silence_thresh_db_relative", cls.silence_thresh_db_relative)
+                raw.get("silence_thresh_db_relative", cls.silence_thresh_db_relative)
             ),
-            min_silence_len_ms=int(d.get("min_silence_len_ms", cls.min_silence_len_ms)),
-            min_gap_safety_ms=int(d.get("min_gap_safety_ms", cls.min_gap_safety_ms)),
+            min_silence_len_ms=int(raw.get("min_silence_len_ms", cls.min_silence_len_ms)),
+            segment_trim_pad_ms=int(raw.get("segment_trim_pad_ms", cls.segment_trim_pad_ms)),
         )
 
 
 @dataclass(frozen=True)
 class AssemblyResult:
-    """
-    Rich return value from :func:`assemble_bulletin`.
-
-    Attributes
-    ----------
-    output_path:
-        Absolute path to the exported MP3.
-    transitions_count:
-        Number of transition clips that were overlaid on silences.
-    duration_ms:
-        Total duration of the final bulletin (intro + body + outro) in ms.
-    """
+    """Rich return value from :func:`assemble_bulletin`."""
 
     output_path: Path
+    segments_count: int
+    """Number of speech segments detected in the raw audio."""
+
     transitions_count: int
-    duration_ms: int
-
-
-@dataclass(frozen=True)
-class TransitionInfo:
-    """
-    Metadata describing a single transition that was overlaid on a silence.
-
-    This is returned alongside the processed audio by :func:`insert_transitions`
-    so callers (and tests) can inspect exact boundaries without re-analysing the
-    audio waveform.
-    """
-
-    silence_start_ms: int
-    """Start of the detected silence this transition fills."""
-
-    silence_end_ms: int
-    """End of the detected silence this transition fills."""
-
-    trans_start_ms: int
-    """Absolute position (ms) where the transition clip begins in the track."""
-
-    trans_end_ms: int
-    """Absolute position (ms) where the transition clip ends in the track."""
+    """Number of transitions inserted (= segments_count - 1)."""
 
     duration_ms: int
-    """Actual (possibly truncated) duration of the clip that was overlaid."""
-
-    fade_in_ms: int
-    """Fade-in actually applied (may be < transition_fade_in_ms on short silences)."""
-
-    fade_out_ms: int
-    """Fade-out actually applied (may be < transition_fade_out_ms on short silences)."""
+    """Total duration of the final bulletin in ms."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. detect_silences
+# STEP 1 – detect_and_split_by_silence
 # ─────────────────────────────────────────────────────────────────────────────
 
-def detect_silences(
-    audio: AudioSegment,
-    silence_thresh_db: float,
-    min_silence_len_ms: int,
-) -> list[tuple[int, int]]:
+def detect_and_split_by_silence(
+    raw_audio: AudioSegment,
+    cfg: MixConfig,
+) -> list[AudioSegment]:
     """
-    Detect all silent intervals anywhere inside *audio*.
+    Detect all silences in *raw_audio* and return the speech segments between them.
 
-    Works on the **full** segment in a single pass, so it finds silences both
-    between clips (after concatenation) and inside a single clip where a pause
-    exceeds *min_silence_len_ms*.
+    Algorithm
+    ---------
+    1. Compute the absolute silence threshold from the clip's mean dBFS and
+       ``cfg.silence_thresh_db_relative``.
+    2. Find all ``[silence_start, silence_end]`` intervals using pydub.
+    3. The speech segments are the gaps **between** silences (plus the audio
+       before the first silence and after the last silence, if non-empty).
+    4. Leading silence at the very start of the file and trailing silence at
+       the very end are excluded — they are replaced by intro/outro, never by
+       a transition.
 
     Parameters
     ----------
-    audio:
-        The :class:`~pydub.AudioSegment` to analyse.
-    silence_thresh_db:
-        Absolute dBFS level below which samples are considered silent.
-        Compute as ``audio.dBFS + cfg.silence_thresh_db_relative`` to make it
-        relative to the recording's average loudness.
-    min_silence_len_ms:
-        Minimum contiguous silent length (ms) required to be reported.
+    raw_audio:
+        The raw input :class:`~pydub.AudioSegment`.
+    cfg:
+        :class:`MixConfig` carrying ``silence_thresh_db_relative`` and
+        ``min_silence_len_ms``.
 
     Returns
     -------
-    list[tuple[int, int]]
-        Sorted list of ``(start_ms, end_ms)`` intervals.
+    list[AudioSegment]
+        Ordered list of speech-only segments.  Each segment may still have
+        a little residual silence at its edges; call :func:`trim_segment_edges`
+        on each one before assembling.
     """
-    raw: list[list[int]] = _pydub_detect_silence(
-        audio,
-        min_silence_len=min_silence_len_ms,
-        silence_thresh=silence_thresh_db,
-        seek_step=1,
-    )
-    return [(int(s), int(e)) for s, e in raw]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. insert_transitions
-# ─────────────────────────────────────────────────────────────────────────────
-
-def insert_transitions(
-    voice_track: AudioSegment,
-    transition_asset: AudioSegment,
-    cfg: MixConfig,
-) -> tuple[AudioSegment, list[TransitionInfo]]:
-    """
-    Overlay a transition jingle centred on every detected silence in *voice_track*.
-
-    Placement rules
-    ~~~~~~~~~~~~~~~
-    * A ``min_gap_safety_ms`` margin is preserved on each side of the transition
-      so it never overlaps speech.
-    * The transition duration is capped at ``transition_max_ms`` (5 000 ms).
-    * **Short silence** (available space < ``transition_max_ms``):
-      The transition is trimmed *symmetrically* to fit entirely inside the safe
-      zone.  The total duration of *voice_track* never increases.
-    * **Long silence** (available space ≥ ``transition_max_ms``):
-      The 5 s transition is placed centred in the safe zone; the leftover silence
-      on both sides is filled by the bed (built separately), so there is never
-      real silence in the final mix.
-    * Fade-in / fade-out are each capped at ``transition_duration // 2`` so they
-      never overlap each other on very short transitions.
-
-    The returned :class:`~pydub.AudioSegment` has **the same duration** as the
-    input *voice_track* because we overlay rather than splice.
-
-    Returns
-    -------
-    (modified_voice_track, list[TransitionInfo])
-        The second element exposes every transition's exact boundaries for
-        testing and logging.
-    """
-    # Guard: completely silent track has dBFS = -inf; skip gracefully.
-    mean_dbfs = voice_track.dBFS
+    mean_dbfs = raw_audio.dBFS
     if math.isinf(mean_dbfs):
-        return voice_track, []
+        # Completely silent file → no speech segments
+        return []
 
     abs_thresh = mean_dbfs + cfg.silence_thresh_db_relative
 
-    silences = detect_silences(voice_track, abs_thresh, cfg.min_silence_len_ms)
+    raw_silences: list[list[int]] = _pydub_detect_silence(
+        raw_audio,
+        min_silence_len=cfg.min_silence_len_ms,
+        silence_thresh=abs_thresh,
+        seek_step=1,
+    )
+    silences: list[tuple[int, int]] = [(int(s), int(e)) for s, e in raw_silences]
 
-    result = voice_track
-    inserted: list[TransitionInfo] = []
+    total_ms = len(raw_audio)
+
+    # Build speech regions as the complement of silence regions
+    speech_regions: list[tuple[int, int]] = []
+    cursor = 0
 
     for sil_start, sil_end in silences:
-        # ── Determine the safe zone ───────────────────────────────────────────
-        safe_start = sil_start + cfg.min_gap_safety_ms
-        safe_end = sil_end - cfg.min_gap_safety_ms
-        available_ms = safe_end - safe_start
+        if sil_start > cursor:
+            speech_regions.append((cursor, sil_start))
+        cursor = sil_end
 
-        if available_ms <= 0:
-            # Silence too short even for the safety margins – skip.
-            continue
+    # Final segment after the last silence
+    if cursor < total_ms:
+        speech_regions.append((cursor, total_ms))
 
-        # ── Clip duration ─────────────────────────────────────────────────────
-        trans_duration = min(cfg.transition_max_ms, available_ms)
-
-        # ── Centre in the safe zone ───────────────────────────────────────────
-        center = (safe_start + safe_end) // 2
-        trans_start = center - trans_duration // 2
-        trans_end = trans_start + trans_duration
-
-        # Clamp to safe zone edges (handles odd-length rounding)
-        trans_start = max(trans_start, safe_start)
-        trans_end = min(trans_end, safe_end)
-        trans_duration = trans_end - trans_start  # recompute after clamp
-
-        # ── Trim asset ────────────────────────────────────────────────────────
-        trans_clip: AudioSegment = transition_asset[:trans_duration]
-
-        # ── Fades ─────────────────────────────────────────────────────────────
-        half = trans_duration // 2
-        fade_in = min(cfg.transition_fade_in_ms, half)
-        fade_out = min(cfg.transition_fade_out_ms, half)
-
-        trans_clip = trans_clip.fade_in(fade_in).fade_out(fade_out)
-
-        # ── Overlay (duration of result never changes) ────────────────────────
-        result = result.overlay(trans_clip, position=trans_start)
-
-        inserted.append(
-            TransitionInfo(
-                silence_start_ms=sil_start,
-                silence_end_ms=sil_end,
-                trans_start_ms=trans_start,
-                trans_end_ms=trans_end,
-                duration_ms=trans_duration,
-                fade_in_ms=fade_in,
-                fade_out_ms=fade_out,
-            )
-        )
-
-    return result, inserted
+    # Extract as AudioSegment slices
+    segments = [raw_audio[start:end] for start, end in speech_regions if end > start]
+    return segments
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. build_bed
+# STEP 2 – trim_segment_edges
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_bed(
+def trim_segment_edges(segment: AudioSegment, pad_ms: int = 100) -> AudioSegment:
+    """
+    Remove residual silence from the leading and trailing edges of *segment*.
+
+    Works on the segment **in isolation** (never on the full concatenated
+    track), so a silence that happens to be the quietest part of one segment
+    does not contaminate the trimming threshold of another.
+
+    The ``pad_ms`` guard ensures we never trim right up to the first/last
+    speech sample — a small safety margin is always preserved.
+
+    Parameters
+    ----------
+    segment:
+        Individual speech :class:`~pydub.AudioSegment` to trim.
+    pad_ms:
+        Safety margin (ms) kept on each side after trimming.  Defaults to 100.
+
+    Returns
+    -------
+    AudioSegment — the trimmed segment, or the original if no trimming was needed.
+    """
+    if len(segment) == 0:
+        return segment
+
+    mean_dbfs = segment.dBFS
+    if math.isinf(mean_dbfs):
+        return AudioSegment.empty()
+
+    # Use a fairly aggressive threshold: 20 dB below the segment's own mean
+    # so only true silence (not quiet-but-present speech) is trimmed.
+    thresh = mean_dbfs - 20.0
+
+    silences = _pydub_detect_silence(
+        segment,
+        min_silence_len=50,   # short threshold — we just want edge silences
+        silence_thresh=thresh,
+        seek_step=1,
+    )
+
+    if not silences:
+        return segment
+
+    silences_t = [(int(s), int(e)) for s, e in silences]
+    total = len(segment)
+
+    trim_start = 0
+    trim_end = total
+
+    # Leading silence: if first silence touches the start (within pad_ms tolerance)
+    if silences_t[0][0] < pad_ms:
+        trim_start = max(0, silences_t[0][1] - pad_ms)
+
+    # Trailing silence: if last silence touches the end
+    if silences_t[-1][1] > total - pad_ms:
+        trim_end = min(total, silences_t[-1][0] + pad_ms)
+
+    if trim_start >= trim_end:
+        return segment  # degenerate, return as-is
+
+    return segment[trim_start:trim_end]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 3a – build_bed_with_envelope
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_bed_with_envelope(
     fond_asset: AudioSegment,
-    total_duration_ms: int,
-    duck_db: float,
+    segment_durations: list[int],
+    cfg: MixConfig,
 ) -> AudioSegment:
     """
-    Loop *fond_asset* seamlessly until it fills *total_duration_ms*, then duck.
+    Build a **continuous** looped fond track whose gain envelope matches the
+    full assembly structure (segments + transitions).
 
-    The bed is **exactly** ``total_duration_ms`` long so it can be mixed under
-    the whole vocal montage without any gap, including during transitions.
+    The envelope — seen as a gain curve over time — is:
+
+    ::
+
+        For each segment i (duration D_i):
+          [0 … D_i]          → duck_db   (under speech)
+
+        Between segment i and i+1:
+          [0 … fade_in_ms]   → duck_db → transition_high_db  (rise)
+          [fade_in_ms … T-fade_out_ms] → transition_high_db   (flat peak)
+          [T-fade_out_ms … T]→ transition_high_db → duck_db  (fall)
+          where T = transition_total_ms
+
+        No transition after the last segment.
+
+    The fond loops seamlessly underneath the entire structure; gain changes
+    are applied by constructing alternating ducked/loud/transition slices
+    and overlaying them.
 
     Parameters
     ----------
     fond_asset:
-        Background music clip to loop.  Must be non-empty.
-    total_duration_ms:
-        Target duration in milliseconds (positive integer).
-    duck_db:
-        Gain delta applied to the looped bed (negative value, e.g. ``-16``).
+        Source background music clip (looped internally to required length).
+    segment_durations:
+        List of durations in ms for each trimmed speech segment, in order.
+    cfg:
+        :class:`MixConfig` with duck/transition parameters.
 
     Returns
     -------
-    AudioSegment of length exactly *total_duration_ms*.
+    AudioSegment whose length equals
+    ``sum(segment_durations) + (len(segment_durations) - 1) * transition_total_ms``.
     """
+    if not segment_durations:
+        return AudioSegment.empty()
+
+    n_transitions = max(0, len(segment_durations) - 1)
+    total_ms = sum(segment_durations) + n_transitions * cfg.transition_total_ms
+
     if len(fond_asset) == 0:
         raise ValueError("fond_asset must not be empty")
-    if total_duration_ms <= 0:
-        raise ValueError("total_duration_ms must be a positive integer")
 
-    loops_needed = math.ceil(total_duration_ms / len(fond_asset))
-    bed: AudioSegment = fond_asset * loops_needed   # loop by multiplication
-    bed = bed[:total_duration_ms]                   # trim to exact length
-    bed = bed + duck_db                             # duck gain
-    return bed
+    # Build the raw (unmodified) looped bed at full volume
+    loops_needed = math.ceil(total_ms / len(fond_asset))
+    bed_raw: AudioSegment = (fond_asset * loops_needed)[:total_ms]
+
+    # Pre-build level references
+    bed_ducked = bed_raw + cfg.duck_db
+    bed_high   = bed_raw + cfg.transition_high_db
+
+    fade_in_ms  = min(cfg.transition_fade_in_ms,  cfg.transition_total_ms // 2)
+    fade_out_ms = min(cfg.transition_fade_out_ms, cfg.transition_total_ms // 2)
+    flat_ms     = cfg.transition_total_ms - fade_in_ms - fade_out_ms
+
+    parts: list[AudioSegment] = []
+    cursor = 0
+
+    for i, dur in enumerate(segment_durations):
+        # ── Speech segment: fond at duck_db ───────────────────────────────────
+        seg_end = cursor + dur
+        parts.append(bed_ducked[cursor:seg_end])
+        cursor = seg_end
+
+        # ── Transition (not after the last segment) ───────────────────────────
+        if i < len(segment_durations) - 1:
+            t_start = cursor
+
+            # Phase 1: fade-in from duck_db → transition_high_db
+            if fade_in_ms > 0:
+                fi_end = t_start + fade_in_ms
+                duck_ramp = bed_ducked[t_start:fi_end].fade_out(fade_in_ms)
+                high_ramp = bed_high[t_start:fi_end].fade_in(fade_in_ms)
+                parts.append(duck_ramp.overlay(high_ramp))
+                cursor = fi_end
+
+            # Phase 2: flat at transition_high_db
+            if flat_ms > 0:
+                flat_end = cursor + flat_ms
+                parts.append(bed_high[cursor:flat_end])
+                cursor = flat_end
+
+            # Phase 3: fade-out from transition_high_db → duck_db
+            if fade_out_ms > 0:
+                fo_end = cursor + fade_out_ms
+                high_ramp = bed_high[cursor:fo_end].fade_out(fade_out_ms)
+                duck_ramp = bed_ducked[cursor:fo_end].fade_in(fade_out_ms)
+                parts.append(high_ramp.overlay(duck_ramp))
+                cursor = fo_end
+
+    # Concatenate and ensure exact length
+    final_bed: AudioSegment = AudioSegment.empty()
+    for p in parts:
+        final_bed += p
+
+    delta = total_ms - len(final_bed)
+    if delta > 0:
+        final_bed += AudioSegment.silent(
+            duration=delta, frame_rate=final_bed.frame_rate
+        )
+    elif delta < 0:
+        final_bed = final_bed[:total_ms]
+
+    return final_bed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. assemble_bulletin
+# STEP 3b – assemble_bulletin
 # ─────────────────────────────────────────────────────────────────────────────
 
 def assemble_bulletin(
-    voice_clip_paths: list[str | Path],
+    raw_audio_path: str | Path,
     config_path: str | Path,
     output_path: str | Path,
     *,
-    # Optional asset injection for unit-testing (avoids real mp3 on disk)
+    # Optional asset injection for unit tests (avoids real files on disk)
     intro_asset: AudioSegment | None = None,
     outro_asset: AudioSegment | None = None,
-    fond_asset: AudioSegment | None = None,
-    transition_asset: AudioSegment | None = None,
+    fond_asset:  AudioSegment | None = None,
 ) -> AssemblyResult:
     """
     Full bulletin assembly pipeline.
 
-    Pipeline
-    --------
-    1. Load ``source_bank.json`` → :class:`MixConfig`.
-    2. Load/receive intro, outro, fond, transition assets.
-    3. Concatenate all *voice_clip_paths* into a single voice track.
-    4. :func:`insert_transitions` – overlay transition jingles on every silence.
-    5. :func:`build_bed` – create a continuous ducked background exactly as long
-       as the voice track (with transitions).
-    6. Mix: bed **underneath** voice+transitions (``bed.overlay(voice)``).
-    7. Crossfade intro (1 000 ms) → mixed vocal track → crossfade outro (1 000 ms).
-    8. Export as stereo MP3 @ 192 kbps.
-
-    The keyword arguments ``*_asset`` allow injecting synthetic
-    :class:`~pydub.AudioSegment` objects in tests instead of real files.
+    Pipeline (exact order)
+    ----------------------
+    1. Load config → :class:`MixConfig`.
+    2. Load intro, outro, fond assets.
+    3. Load raw audio from *raw_audio_path*.
+    4. :func:`detect_and_split_by_silence` → list of speech segments.
+    5. :func:`trim_segment_edges` on each segment individually.
+    6. :func:`build_bed_with_envelope` → continuous fond track with envelope.
+    7. Mix each speech segment with the corresponding fond slice (bed overlay).
+    8. Interleave mixed segments and silence-replaced-by-transition slices
+       (transition = the fond itself at high volume).
+    9. Prepend intro (fixed, no fond underneath).
+    10. Append outro (fond fade-out crossfade with outro fade-in).
+    11. Export stereo MP3 @ 192 kbps.
 
     Returns
     -------
-    :class:`AssemblyResult` with output_path, transitions_count, duration_ms.
+    :class:`AssemblyResult` with segments_count, transitions_count, duration_ms.
     """
     cfg = MixConfig.from_json(config_path)
-    config_data = json.loads(Path(config_path).read_text(encoding="utf-8"))
-    roles = config_data.get("roles", {})
-
-    # Backend root is two levels above config/source_bank.json
     backend_root = Path(config_path).parent.parent
 
-    def _load(asset: AudioSegment | None, role: str) -> AudioSegment:
+    def _load(asset: AudioSegment | None, rel_path: str) -> AudioSegment:
         if asset is not None:
             return asset
-        rel_path: str = roles[role]["path"]
-        return AudioSegment.from_file(backend_root / rel_path)
+        full = backend_root / rel_path
+        if not full.exists():
+            raise FileNotFoundError(str(full))
+        return AudioSegment.from_file(str(full))
 
-    intro = _load(intro_asset, "intro")
-    outro = _load(outro_asset, "outro")
-    fond = _load(fond_asset, "fond")
-    transition = _load(transition_asset, "transition")
+    intro      = _load(intro_asset, cfg.intro_path)
+    outro      = _load(outro_asset, cfg.outro_path)
+    fond       = _load(fond_asset,  cfg.fond_path)
 
-    # ── Concatenate voice clips ───────────────────────────────────────────────
-    if not voice_clip_paths:
-        raise ValueError("At least one voice clip path is required")
+    # ── Load raw audio ────────────────────────────────────────────────────────
+    raw = AudioSegment.from_file(str(raw_audio_path))
 
-    voice_track: AudioSegment = AudioSegment.empty()
-    for p in voice_clip_paths:
-        voice_track = voice_track + AudioSegment.from_file(p)
+    # ── STEP 1: detect & split by silence ─────────────────────────────────────
+    segments = detect_and_split_by_silence(raw, cfg)
 
-    # ── Insert transitions ────────────────────────────────────────────────────
-    voice_with_trans, inserted_transitions = insert_transitions(voice_track, transition, cfg)
+    if not segments:
+        raise ValueError(
+            "No speech segments detected in the uploaded audio. "
+            "Check the file or adjust silence_thresh_db_relative / min_silence_len_ms."
+        )
 
-    # ── Build bed (same length as the voice+transitions track) ────────────────
-    bed = build_bed(fond, len(voice_with_trans), cfg.duck_db)
+    # ── STEP 2: trim each segment individually ────────────────────────────────
+    segments = [trim_segment_edges(seg, cfg.segment_trim_pad_ms) for seg in segments]
+    # Drop segments that become empty after trimming
+    segments = [seg for seg in segments if len(seg) > 0]
 
-    # ── Mix: bed underneath, voice on top ─────────────────────────────────────
-    mixed: AudioSegment = bed.overlay(voice_with_trans)
+    if not segments:
+        raise ValueError("All speech segments were empty after trimming.")
 
-    # ── Crossfade intro → mixed → outro ──────────────────────────────────────
-    #   append(other, crossfade=N) overlaps last N ms of self with first N ms of other
-    CROSSFADE_MS = 1_000
-    result: AudioSegment = intro.append(mixed, crossfade=CROSSFADE_MS)
-    result = result.append(outro, crossfade=CROSSFADE_MS)
+    n_segs = len(segments)
+    n_trans = n_segs - 1
+    seg_durations = [len(s) for s in segments]
+
+    # ── STEP 3: build continuous fond bed with gain envelope ──────────────────
+    bed = build_bed_with_envelope(fond, seg_durations, cfg)
+
+    # ── STEP 4: mix speech over the correct bed slice, then interleave ────────
+    body: AudioSegment = AudioSegment.empty()
+    bed_cursor = 0
+
+    for i, seg in enumerate(segments):
+        dur = seg_durations[i]
+
+        # Speech segment: overlay fond (already ducked) + voice
+        seg_bed = bed[bed_cursor : bed_cursor + dur]
+        body += seg_bed.overlay(seg)
+        bed_cursor += dur
+
+        # Transition (not after last segment): pure fond at envelope peak
+        if i < n_segs - 1:
+            t_ms = cfg.transition_total_ms
+            trans_bed = bed[bed_cursor : bed_cursor + t_ms]
+            body += trans_bed
+            bed_cursor += t_ms
+
+    # ── STEP 5: prepend intro (no fond underneath) ────────────────────────────
+    INTRO_CROSSFADE_MS = min(len(intro), 4_000)
+    result = intro.append(body, crossfade=INTRO_CROSSFADE_MS)
+
+    # ── STEP 6: append outro (crossfade with body end) ────────────────────────
+    OUTRO_CROSSFADE_MS = min(len(outro), 1_000)
+    result = result.append(outro, crossfade=OUTRO_CROSSFADE_MS)
 
     # ── Ensure stereo ─────────────────────────────────────────────────────────
     result = result.set_channels(2)
@@ -406,13 +497,14 @@ def assemble_bulletin(
 
     return AssemblyResult(
         output_path=out,
-        transitions_count=len(inserted_transitions),
+        segments_count=n_segs,
+        transitions_count=n_trans,
         duration_ms=len(result),
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. loudness_normalize
+# loudness_normalize
 # ─────────────────────────────────────────────────────────────────────────────
 
 def loudness_normalize(
@@ -421,17 +513,15 @@ def loudness_normalize(
     target_lufs: float = -16.0,
 ) -> Path:
     """
-    Normalise the integrated loudness of an audio file to *target_lufs* LUFS.
-
-    Uses **ffmpeg**'s ``loudnorm`` filter (EBU R128 / ITU-R BS.1770-4).
-    Single-pass mode is used, which is adequate for broadcast mastering.
+    Normalise the integrated loudness of an audio file to *target_lufs* LUFS
+    using ffmpeg's ``loudnorm`` filter (EBU R128 / ITU-R BS.1770-4).
 
     Parameters
     ----------
     input_path:
-        Source audio file (any format supported by ffmpeg).
+        Source audio file.
     output_path:
-        Destination path; parent directories are created automatically.
+        Destination path (parent directories created automatically).
     target_lufs:
         Target integrated loudness (default ``-16.0`` LUFS).
 
