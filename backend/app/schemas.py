@@ -46,6 +46,8 @@ class SourceBankDefaults(BaseModel):
     silence_thresh_db_relative: float
     min_silence_len_ms: int
     segment_trim_pad_ms: int
+    normalize_voice: bool = True
+    target_peak_dbfs: float = -1.0
 
 
 class SourceBankResponse(BaseModel):
@@ -106,6 +108,12 @@ class ConfigPatchRequest(BaseModel):
     )
     segment_trim_pad_ms: Optional[int] = Field(
         None, ge=0, le=1_000, description="Safety pad kept on each edge when trimming segments."
+    )
+    normalize_voice: Optional[bool] = Field(
+        None, description="Whether to auto-normalize low input voice (Adobe Audition style)."
+    )
+    target_peak_dbfs: Optional[float] = Field(
+        None, ge=-30.0, le=0.0, description="Target peak level in dBFS for voice normalization."
     )
 
 

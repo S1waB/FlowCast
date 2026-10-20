@@ -50,8 +50,11 @@ export default function NewBulletinPage() {
   };
 
   const addFile = (rawFile: File) => {
-    if (!rawFile.name.toLowerCase().endsWith(".mp3") && !rawFile.name.toLowerCase().endsWith(".wav")) {
-      setError("Format non supporté. Veuillez uploader un .mp3 ou .wav");
+    const validExts = [".mp3", ".wav", ".m4a", ".ma4", ".mp4"];
+    const fileName = rawFile.name.toLowerCase();
+    const isValid = validExts.some(ext => fileName.endsWith(ext));
+    if (!isValid) {
+      setError("Format non supporté. Formats acceptés : .mp3, .wav, .m4a, .mp4");
       return;
     }
     if (file) URL.revokeObjectURL(file.url);
@@ -111,10 +114,10 @@ export default function NewBulletinPage() {
         >
           <div className="text-4xl mb-4">🎤</div>
           <h3 className="text-lg font-semibold text-text mb-2">Glissez votre fichier vocal brut ici</h3>
-          <p className="text-sm text-muted mb-4">1 seul fichier contenant tous les clips avec des pauses (Formats : .mp3, .wav)</p>
+          <p className="text-sm text-muted mb-4">1 seul fichier contenant tous les clips avec des pauses (Formats : .mp3, .wav, .m4a, .mp4)</p>
           <label className="cursor-pointer px-4 py-2 bg-surface text-text font-medium rounded-md border border-border hover:bg-surface2 transition-colors">
             Ou parcourez vos fichiers
-            <input type="file" accept=".mp3,.wav" className="hidden" onChange={handleFileInput} />
+            <input type="file" accept=".mp3,.wav,.m4a,.ma4,.mp4,audio/*,video/mp4" className="hidden" onChange={handleFileInput} />
           </label>
         </div>
       )}

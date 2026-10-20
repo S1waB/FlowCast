@@ -21,6 +21,8 @@ export interface SourceBankDefaults {
   silence_thresh_db_relative: number;
   min_silence_len_ms: number;
   segment_trim_pad_ms: number;
+  normalize_voice?: boolean;
+  target_peak_dbfs?: number;
 }
 
 export interface SourceBankResponse {
@@ -37,6 +39,8 @@ export interface ConfigPatchRequest {
   silence_thresh_db_relative?: number;
   min_silence_len_ms?: number;
   segment_trim_pad_ms?: number;
+  normalize_voice?: boolean;
+  target_peak_dbfs?: number;
 }
 
 // We use the Vite proxy during local dev, or the direct URL

@@ -58,3 +58,29 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(source_bank.router)
 app.include_router(bulletins.router)
+
+# ── Static Frontend (For Standalone EXE) ──────────────────────────────────────
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import os
+from pathlib import Path
+
+# In PyInstaller, files are extracted to sys._MEIPASS or local dir
+# We'll look for a 'static' directory next to the running executable or in the current working dir
+static_dir = Path(__file__).parent.parent / "static"
+if not static_dir.exists() and os.path.exists("static"):
+    static_dir = Path("static")
+
+if static_dir.exists():
+    # Mount assets
+    assets_dir = static_dir / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    # Serve index.html for all other routes to support SPA
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_frontend(full_path: str):
+        target_path = static_dir / full_path
+        if target_path.is_file():
+            return FileResponse(target_path)
+        return FileResponse(static_dir / "index.html")

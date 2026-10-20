@@ -91,3 +91,54 @@ def test_assemble_bulletin_mocked(
     assert res.segments_count == 2
     assert res.transitions_count == 1
     assert out_path.exists()
+
+
+def test_normalize_audio_quiet(speech: AudioSegment) -> None:
+    from app.audio_engine import normalize_audio
+    # Make speech very quiet (-28 dBFS)
+    quiet_speech = speech.apply_gain(-22.0)
+    assert quiet_speech.max_dBFS < -20.0
+
+    normalized = normalize_audio(quiet_speech, target_peak_dbfs=-1.0)
+    assert abs(normalized.max_dBFS - (-1.0)) < 0.1
+
+
+def test_normalize_audio_loud(speech: AudioSegment) -> None:
+    from app.audio_engine import normalize_audio
+    # Make speech hot (0 dBFS peak)
+    loud_speech = speech + 6.0
+    normalized = normalize_audio(loud_speech, target_peak_dbfs=-1.0)
+    assert abs(normalized.max_dBFS - (-1.0)) < 0.1
+
+
+def test_assemble_bulletin_normalizes_quiet_input(
+    raw_two_segments: AudioSegment,
+    speech: AudioSegment,
+    fond_asset: AudioSegment,
+    tmp_path: Path,
+) -> None:
+    # Quiet raw voice track (-25 dBFS)
+    quiet_raw = raw_two_segments.apply_gain(-20.0)
+    raw_path = tmp_path / "quiet_raw.mp3"
+    quiet_raw.export(str(raw_path), format="mp3")
+
+    cfg_path = tmp_path / "source_bank.json"
+    cfg_path.write_text('{"normalize_voice": true, "target_peak_dbfs": -1.0}')
+
+    out_path = tmp_path / "quiet_out.mp3"
+
+    res = assemble_bulletin(
+        raw_path,
+        cfg_path,
+        out_path,
+        intro_asset=speech,
+        outro_asset=speech,
+        fond_asset=fond_asset,
+    )
+
+    assert res.segments_count == 2
+    assert out_path.exists()
+    out_audio = AudioSegment.from_file(str(out_path))
+    # Should not be silent or overly quiet
+    assert out_audio.max_dBFS >= -3.0
+

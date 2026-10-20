@@ -28,6 +28,7 @@ detect_and_split_by_silence(raw_audio, cfg) -> list[AudioSegment]
 trim_segment_edges(segment, pad_ms) -> AudioSegment
 build_bed_with_envelope(fond_asset, segment_durations, cfg) -> AudioSegment
 assemble_bulletin(raw_audio_path, config_path, output_path) -> AssemblyResult
+normalize_audio(segment, target_peak_dbfs, max_gain_db) -> AudioSegment
 loudness_normalize(input_path, output_path, target_lufs) -> Path
 """
 
@@ -87,6 +88,13 @@ class MixConfig:
     segment_trim_pad_ms: int = 100
     """Safety pad kept at each edge when trimming individual segment silences."""
 
+    # Voice Normalization (Adobe Audition style)
+    normalize_voice: bool = True
+    """Whether to auto-normalize low input voice and speech segments to broadcast levels."""
+
+    target_peak_dbfs: float = -1.0
+    """Target peak level in dBFS for voice normalization (default -1.0 dBFS)."""
+
     # ── factory ──────────────────────────────────────────────────────────────
 
     @classmethod
@@ -107,6 +115,8 @@ class MixConfig:
             ),
             min_silence_len_ms=int(raw.get("min_silence_len_ms", cls.min_silence_len_ms)),
             segment_trim_pad_ms=int(raw.get("segment_trim_pad_ms", cls.segment_trim_pad_ms)),
+            normalize_voice=bool(raw.get("normalize_voice", cls.normalize_voice)),
+            target_peak_dbfs=float(raw.get("target_peak_dbfs", cls.target_peak_dbfs)),
         )
 
 
@@ -123,6 +133,35 @@ class AssemblyResult:
 
     duration_ms: int
     """Total duration of the final bulletin in ms."""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Normalization (Adobe Audition peak normalization)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def normalize_audio(
+    segment: AudioSegment,
+    target_peak_dbfs: float = -1.0,
+    max_gain_db: float = 30.0,
+    noise_floor_thresh_dbfs: float = -45.0,
+) -> AudioSegment:
+    """
+    Peak-normalize an AudioSegment (Adobe Audition style).
+
+    Scales the audio so its maximum peak reaches `target_peak_dbfs` (default -1.0 dBFS).
+    If audio is too quiet, it is amplified up to `max_gain_db` (default +30 dB).
+    If audio is too loud (peak > -1.0 dBFS), it is attenuated to avoid clipping.
+    Empty audio or audio with peak below `noise_floor_thresh_dbfs` is left untouched.
+    """
+    if len(segment) == 0:
+        return segment
+    peak = segment.max_dBFS
+    if math.isinf(peak) or peak < noise_floor_thresh_dbfs:
+        return segment
+
+    needed_gain = target_peak_dbfs - peak
+    applied_gain = min(needed_gain, max_gain_db)
+    return segment.apply_gain(applied_gain)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -436,6 +475,10 @@ def assemble_bulletin(
     # ── Load raw audio ────────────────────────────────────────────────────────
     raw = AudioSegment.from_file(str(raw_audio_path))
 
+    # ── Auto-Normalize raw input if low or un-normalized (Adobe Audition style) ──
+    if cfg.normalize_voice:
+        raw = normalize_audio(raw, target_peak_dbfs=cfg.target_peak_dbfs)
+
     # ── STEP 1: detect & split by silence ─────────────────────────────────────
     segments = detect_and_split_by_silence(raw, cfg)
 
@@ -452,6 +495,10 @@ def assemble_bulletin(
 
     if not segments:
         raise ValueError("All speech segments were empty after trimming.")
+
+    # Level/normalize each speech segment so voice is consistently clear & audible
+    if cfg.normalize_voice:
+        segments = [normalize_audio(seg, target_peak_dbfs=cfg.target_peak_dbfs) for seg in segments]
 
     n_segs = len(segments)
     n_trans = n_segs - 1
@@ -489,6 +536,10 @@ def assemble_bulletin(
 
     # ── Ensure stereo ─────────────────────────────────────────────────────────
     result = result.set_channels(2)
+
+    # Prevent digital clipping in final mix (peak headroom <= -0.5 dBFS)
+    if result.max_dBFS > -0.5:
+        result = normalize_audio(result, target_peak_dbfs=-1.0)
 
     # ── Export ────────────────────────────────────────────────────────────────
     out = Path(output_path)

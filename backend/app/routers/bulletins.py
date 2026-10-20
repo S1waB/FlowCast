@@ -20,7 +20,12 @@ from fastapi.responses import FileResponse
 from app import job_store
 from app.audio_engine import assemble_bulletin
 from app.core.config import settings
-from app.dependencies import MAX_CLIP_BYTES, read_audio_upload
+from app.dependencies import (
+    CONVERT_TO_MP3_EXTENSIONS,
+    MAX_CLIP_BYTES,
+    convert_to_mp3,
+    read_audio_upload,
+)
 from app.schemas import (
     BulletinCreateResponse,
     BulletinStatusResponse,
@@ -138,8 +143,29 @@ async def create_bulletin(
 
     content, ext = await read_audio_upload(file, MAX_CLIP_BYTES, field_name="file")
 
-    clip_path = settings.uploads_dir / f"{job_id}_raw{ext}"
-    clip_path.write_bytes(content)
+    if ext in CONVERT_TO_MP3_EXTENSIONS:
+        temp_input = settings.uploads_dir / f"{job_id}_uploaded{ext}"
+        clip_path = settings.uploads_dir / f"{job_id}_raw.mp3"
+        try:
+            temp_input.write_bytes(content)
+            convert_to_mp3(temp_input, clip_path)
+        except Exception as exc:
+            temp_input.unlink(missing_ok=True)
+            clip_path.unlink(missing_ok=True)
+            job_store.update_job(
+                job_id,
+                status=JobStatus.ERROR,
+                error=f"Erreur de conversion en MP3: {exc}",
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=f"Impossible de convertir le fichier audio/vidéo en MP3: {exc}",
+            ) from exc
+        finally:
+            temp_input.unlink(missing_ok=True)
+    else:
+        clip_path = settings.uploads_dir / f"{job_id}_raw{ext}"
+        clip_path.write_bytes(content)
 
     # ── Update job with real path and launch worker ───────────────────────────
     job_store.update_job(

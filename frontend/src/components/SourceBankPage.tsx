@@ -147,14 +147,14 @@ function AssetCard({ title, desc, meta, onUpload }: { title: string, desc: strin
       )}
 
       <div className="mt-4 pt-4 border-t border-border flex justify-between items-center">
-        <span className="text-xs text-muted">{dragActive ? "Lâchez le fichier ici" : "Glissez un .mp3 / .wav ici"}</span>
+        <span className="text-xs text-muted">{dragActive ? "Lâchez le fichier ici" : "Glissez un .mp3, .wav, .m4a ou .mp4 ici"}</span>
         <button 
           onClick={() => inputRef.current?.click()}
           className="px-3 py-1.5 text-sm bg-accent/20 text-accent hover:bg-accent hover:text-white transition-colors rounded-md font-medium"
         >
           {meta?.exists ? "Remplacer" : "Uploader"}
         </button>
-        <input ref={inputRef} type="file" accept=".mp3,.wav" className="hidden" onChange={(e) => {
+        <input ref={inputRef} type="file" accept=".mp3,.wav,.m4a,.ma4,.mp4,audio/*,video/mp4" className="hidden" onChange={(e) => {
           if (e.target.files?.[0]) onUpload(e.target.files[0]);
         }} />
       </div>
@@ -180,14 +180,19 @@ function ConfigPanel({ defaults, onSaved }: { defaults: SourceBankDefaults, onSa
     silence_thresh_db_relative: defaults.silence_thresh_db_relative,
     min_silence_len_ms: defaults.min_silence_len_ms,
     segment_trim_pad_ms: defaults.segment_trim_pad_ms,
+    normalize_voice: defaults.normalize_voice ?? true,
+    target_peak_dbfs: defaults.target_peak_dbfs ?? -1.0,
   });
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setForm(prev => ({ ...prev, [name]: parseFloat(value) }));
+    const { name, value, type, checked } = e.target;
+    setForm(prev => ({
+      ...prev,
+      [name]: type === "checkbox" ? checked : parseFloat(value)
+    }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -219,6 +224,43 @@ function ConfigPanel({ defaults, onSaved }: { defaults: SourceBankDefaults, onSa
       {error && <div className="mb-4 text-sm text-error bg-error/10 p-3 rounded border border-error/20">{error}</div>}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {/* Normalization feature (Adobe Audition style) */}
+        <div className="space-y-1 md:col-span-2 lg:col-span-3 bg-surface p-4 rounded-lg border border-accent/30 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="normalize_voice"
+                name="normalize_voice"
+                checked={form.normalize_voice}
+                onChange={handleChange}
+                className="w-4 h-4 accent-accent rounded cursor-pointer"
+              />
+              <label htmlFor="normalize_voice" className="text-sm font-semibold text-text cursor-pointer">
+                🎙️ Normalisation audio automatique (Style Adobe Audition)
+              </label>
+            </div>
+            <p className="text-xs text-muted pl-6">
+              Amplifie et égalise automatiquement les enregistrements trop bas pour un niveau clair, distinct et professionnel au-dessus du fond musical.
+            </p>
+          </div>
+          {form.normalize_voice && (
+            <div className="flex items-center gap-3 pl-6 md:pl-0">
+              <label className="text-xs font-medium text-text whitespace-nowrap">Niveau crête cible (dBFS) :</label>
+              <input
+                type="number"
+                name="target_peak_dbfs"
+                value={form.target_peak_dbfs}
+                onChange={handleChange}
+                min={-12}
+                max={0}
+                step={0.5}
+                className="w-20 bg-surface2 border border-border rounded px-2 py-1 text-sm text-text"
+              />
+            </div>
+          )}
+        </div>
+
         <ConfigField label="Ducking Fond (dB)" name="duck_db" value={form.duck_db} onChange={handleChange} min={-60} max={0} step={1} hint="Niveau sous la voix (-18 recommandé)" />
         <ConfigField label="Pic Transition (dB)" name="transition_high_db" value={form.transition_high_db} onChange={handleChange} min={-60} max={0} step={1} hint="Niveau pendant la transition (-3)" />
         <ConfigField label="Durée Transition (ms)" name="transition_total_ms" value={form.transition_total_ms} onChange={handleChange} min={500} max={10000} step={100} hint="Durée totale insérée (3000)" />

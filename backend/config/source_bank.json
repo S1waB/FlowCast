@@ -1,13 +1,15 @@
 {
-  "intro": "source_bank/intro.mp3",
+  "intro": "source_bank/intro.wav",
   "outro": "source_bank/outro.mp3",
   "fond": "source_bank/fond.mp3",
-  "duck_db": -26,
-  "transition_high_db": -3,
+  "duck_db": -26.0,
+  "transition_high_db": -3.0,
   "transition_total_ms": 3000,
   "transition_fade_in_ms": 1000,
   "transition_fade_out_ms": 1000,
   "silence_thresh_db_relative": -16,
   "min_silence_len_ms": 400,
-  "segment_trim_pad_ms": 0
+  "segment_trim_pad_ms": 0,
+  "normalize_voice": true,
+  "target_peak_dbfs": -1.0
 }

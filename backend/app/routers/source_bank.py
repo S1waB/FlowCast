@@ -16,10 +16,16 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydub import AudioSegment
 
 from app.core.config import settings
-from app.dependencies import MAX_ASSET_BYTES, read_audio_upload
+from app.dependencies import (
+    CONVERT_TO_MP3_EXTENSIONS,
+    MAX_ASSET_BYTES,
+    convert_to_mp3,
+    read_audio_upload,
+)
 from app.schemas import (
     INTRO_OUTRO_MAX_MS,
     INTRO_OUTRO_MIN_MS,
@@ -47,6 +53,8 @@ _PATCH_KEY_MAP: dict[str, str] = {
     "silence_thresh_db":   "silence_thresh_db_relative",
     "min_silence_len_ms":  "min_silence_len_ms",
     "segment_trim_pad_ms": "segment_trim_pad_ms",
+    "normalize_voice":     "normalize_voice",
+    "target_peak_dbfs":    "target_peak_dbfs",
 }
 
 
@@ -72,7 +80,7 @@ def _asset_path(role: str, ext: str) -> Path:
 def _probe_asset(asset_path: Path, role: str) -> AssetMetadata:
     """Build AssetMetadata for one role by probing the file on disk."""
     if not asset_path.exists():
-        return AssetMetadata(role=role, path=str(asset_path), exists=False)
+        return AssetMetadata(role=role, path=f"source-bank/{role}/audio", exists=False)
 
     size_bytes = asset_path.stat().st_size
     duration_ms: int | None = None
@@ -100,7 +108,7 @@ def _probe_asset(asset_path: Path, role: str) -> AssetMetadata:
 
     return AssetMetadata(
         role=role,
-        path=str(asset_path),
+        path=f"source-bank/{role}/audio",
         exists=True,
         size_bytes=size_bytes,
         duration_ms=duration_ms,
@@ -120,6 +128,8 @@ def _defaults_from_config(cfg: dict[str, Any]) -> SourceBankDefaults:
         silence_thresh_db_relative=cfg.get("silence_thresh_db_relative", -16),
         min_silence_len_ms=cfg.get("min_silence_len_ms", 400),
         segment_trim_pad_ms=cfg.get("segment_trim_pad_ms", 100),
+        normalize_voice=cfg.get("normalize_voice", True),
+        target_peak_dbfs=cfg.get("target_peak_dbfs", -1.0),
     )
 
 
@@ -161,18 +171,36 @@ async def upload_asset(role: str, file: UploadFile) -> AssetUploadResponse:
 
     content, ext = await read_audio_upload(file, MAX_ASSET_BYTES, field_name=role)
 
-    # ── Determine target path ─────────────────────────────────────────────────
-    target = _asset_path(role, ext)
-
-    # Remove old file for this role if it has a different extension
-    for old_ext in (".mp3", ".wav"):
-        old_path = _asset_path(role, old_ext)
-        if old_path != target and old_path.exists():
-            old_path.unlink(missing_ok=True)
-
-    # ── Write file ────────────────────────────────────────────────────────────
     settings.source_bank_dir.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(content)
+
+    # ── Handle conversion to MP3 if m4a, ma4, or mp4 ──────────────────────────
+    if ext in CONVERT_TO_MP3_EXTENSIONS:
+        final_ext = ".mp3"
+        target = _asset_path(role, final_ext)
+        temp_input = settings.source_bank_dir / f"{role}_upload{ext}"
+        try:
+            temp_input.write_bytes(content)
+            convert_to_mp3(temp_input, target)
+        except Exception as exc:
+            temp_input.unlink(missing_ok=True)
+            target.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=422,
+                detail=f"Impossible de convertir le fichier '{role}' en MP3: {exc}",
+            ) from exc
+        finally:
+            temp_input.unlink(missing_ok=True)
+    else:
+        final_ext = ext
+        target = _asset_path(role, final_ext)
+        target.write_bytes(content)
+
+    # Remove old files for this role with different extensions
+    for old_ext in (".mp3", ".wav", ".m4a", ".ma4", ".mp4"):
+        if old_ext != final_ext:
+            old_path = _asset_path(role, old_ext)
+            if old_path.exists():
+                old_path.unlink(missing_ok=True)
 
     # ── Probe duration ────────────────────────────────────────────────────────
     try:
@@ -190,7 +218,7 @@ async def upload_asset(role: str, file: UploadFile) -> AssetUploadResponse:
         ) from exc
 
     # ── Update source_bank.json ───────────────────────────────────────────────
-    rel_path = f"source_bank/{role}{ext}"
+    rel_path = f"source_bank/{role}{final_ext}"
     with _json_lock:
         cfg = _read_config()
         cfg[role] = rel_path
@@ -250,6 +278,39 @@ def get_source_bank() -> SourceBankResponse:
         roles=roles_meta,
         defaults=_defaults_from_config(cfg),
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /source-bank/{role}/audio
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get(
+    "/{role}/audio",
+    summary="Stream source-bank asset audio",
+)
+def get_asset_audio(role: str) -> FileResponse:
+    """Stream audio asset (mp3 or wav) for intro, outro, or fond."""
+    if role not in VALID_ROLES:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown role '{role}'. Valid roles: {sorted(VALID_ROLES)}.",
+        )
+
+    with _json_lock:
+        cfg = _read_config()
+
+    backend_root = settings.source_bank_config.parent.parent
+    rel_path = _role_path_from_config(cfg, role)
+    asset_path = backend_root / rel_path
+
+    if not asset_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Asset for role '{role}' not found on disk ({rel_path}).",
+        )
+
+    media_type = "audio/mpeg" if asset_path.suffix.lower() == ".mp3" else "audio/wav"
+    return FileResponse(asset_path, media_type=media_type, filename=asset_path.name)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
