@@ -10,10 +10,11 @@ export interface HealthResponse {
   timestamp: string;
 }
 
-const API_BASE = import.meta.env.VITE_API_URL ?? "";
+const API_BASE = (import.meta.env.VITE_API_URL || "/api").replace(/\/$/, "");
+const getUrl = (path: string) => (import.meta.env.DEV ? `/api${path}` : `${API_BASE}${path}`);
 
 export async function fetchHealth(): Promise<HealthResponse> {
-  const res = await fetch(`${API_BASE}/health`);
+  const res = await fetch(getUrl("/health"));
   if (!res.ok) {
     throw new Error(`Health check failed: ${res.status} ${res.statusText}`);
   }

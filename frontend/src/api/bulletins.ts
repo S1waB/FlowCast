@@ -28,7 +28,7 @@ export interface BulletinStatusResponse {
 export async function createBulletin(file: File): Promise<BulletinCreateResponse> {
   const formData = new FormData();
   formData.append("file", file); // Match backend single file upload
-  
+
   const res = await fetch(getUrl("/bulletins"), {
     method: "POST",
     body: formData,

@@ -4,11 +4,15 @@ FlowCast – FastAPI application entry point.
 
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.routers import bulletins, health, source_bank
@@ -54,22 +58,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Routers ───────────────────────────────────────────────────────────────────
+# ── Routers (both root and /api prefixes) ─────────────────────────────────────
 app.include_router(health.router)
 app.include_router(source_bank.router)
 app.include_router(bulletins.router)
 
-# ── Static Frontend (For Standalone EXE) ──────────────────────────────────────
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-import os
-from pathlib import Path
+app.include_router(health.router, prefix="/api")
+app.include_router(source_bank.router, prefix="/api")
+app.include_router(bulletins.router, prefix="/api")
 
-# In PyInstaller, files are extracted to sys._MEIPASS or local dir
-# We'll look for a 'static' directory next to the running executable or in the current working dir
+# ── Static Frontend ──────────────────────────────────────────────────────────
+# Look for 'static' directory in backend, current dir, or 'frontend/dist'
 static_dir = Path(__file__).parent.parent / "static"
 if not static_dir.exists() and os.path.exists("static"):
     static_dir = Path("static")
+if not static_dir.exists():
+    candidate_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+    if candidate_dist.exists():
+        static_dir = candidate_dist
 
 if static_dir.exists():
     # Mount assets

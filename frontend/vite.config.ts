@@ -14,6 +14,10 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ""),
       },
+      "/health": {
+        target: process.env.VITE_API_URL ?? "http://localhost:8000",
+        changeOrigin: true,
+      },
     },
   },
 });

@@ -26,6 +26,8 @@ htmlcov/
 # === Node / Frontend ===
 node_modules/
 frontend/dist/
+backend/static/
+desktop/
 frontend/.env
 frontend/.env.local
 frontend/.env.*.local
