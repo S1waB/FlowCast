@@ -216,6 +216,14 @@ function MiniWaveform({ url }: { url: string }) {
 function JobProgressView({ jobStatus, jobId, onReset }: { jobStatus: BulletinStatusResponse | null, jobId: string, onReset: () => void }) {
   const status = jobStatus?.status || "pending";
   const isDone = status === "done";
+
+  const getDownloadFilename = () => {
+    const d = jobStatus?.created_at ? new Date(jobStatus.created_at) : new Date();
+    const pad = (n: number) => n.toString().padStart(2, "0");
+    const time = `${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+    const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    return `news_${time}_${date}.mp3`;
+  };
   
   const progressMap = {
     pending: { label: "En attente...", width: "10%" },
@@ -268,7 +276,7 @@ function JobProgressView({ jobStatus, jobId, onReset }: { jobStatus: BulletinSta
           <div className="flex gap-4 justify-center">
             <a 
               href={getDownloadUrl(jobId)} 
-              download={`bulletin_${jobId}.mp3`}
+              download={getDownloadFilename()}
               className="px-6 py-2.5 bg-accent hover:bg-accent/90 text-white font-medium rounded-md transition-colors shadow-lg shadow-accent/20 flex items-center gap-2"
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>

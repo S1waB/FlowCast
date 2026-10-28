@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile
@@ -278,9 +279,15 @@ def download_bulletin(job_id: str) -> FileResponse:
             detail="Output file missing from disk even though job reported success.",
         )
 
+    # Format download title: news_time_date (e.g. news_14-30-05_2026-10-28.mp3)
+    dt = job.created_at.astimezone() if (job.created_at and job.created_at.tzinfo) else datetime.now()
+    time_str = dt.strftime("%H-%M-%S")
+    date_str = dt.strftime("%Y-%m-%d")
+    dl_filename = f"news_{time_str}_{date_str}.mp3"
+
     return FileResponse(
         path=str(output_path),
         media_type="audio/mpeg",
-        filename=f"bulletin_{job_id}.mp3",
-        headers={"Content-Disposition": f'attachment; filename="bulletin_{job_id}.mp3"'},
+        filename=dl_filename,
+        headers={"Content-Disposition": f'attachment; filename="{dl_filename}"'},
     )

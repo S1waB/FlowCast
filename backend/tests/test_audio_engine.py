@@ -142,3 +142,57 @@ def test_assemble_bulletin_normalizes_quiet_input(
     # Should not be silent or overly quiet
     assert out_audio.max_dBFS >= -3.0
 
+
+def test_strip_silence_edges(speech: AudioSegment) -> None:
+    from app.audio_engine import strip_silence_edges
+    # Add 1200ms silence to beginning and 800ms silence to end
+    padded = AudioSegment.silent(duration=1200) + speech + AudioSegment.silent(duration=800)
+    assert len(padded) == 1200 + len(speech) + 800
+
+    stripped = strip_silence_edges(padded)
+    # The stripped audio should have roughly the duration of speech (within 100ms)
+    assert abs(len(stripped) - len(speech)) < 150
+    # First 100ms should not be silent
+    assert stripped[:100].max_dBFS > -15.0
+
+
+def test_enhance_vocal_audio(speech: AudioSegment) -> None:
+    from app.audio_engine import enhance_vocal_audio
+    # Quiet speech (-25 dBFS)
+    quiet_speech = speech.apply_gain(-20.0)
+    enhanced = enhance_vocal_audio(quiet_speech, target_peak_dbfs=-1.0)
+    assert abs(enhanced.max_dBFS - (-1.0)) < 0.2
+
+
+def test_assemble_bulletin_strips_leading_trailing_silence(
+    speech: AudioSegment,
+    fond_asset: AudioSegment,
+    tmp_path: Path,
+) -> None:
+    # 2000ms silence + speech + 1200ms silence + speech + 1500ms silence
+    silence_start = AudioSegment.silent(duration=2000)
+    silence_mid = AudioSegment.silent(duration=1200)
+    silence_end = AudioSegment.silent(duration=1500)
+    raw_with_silences = silence_start + speech + silence_mid + speech + silence_end
+
+    raw_path = tmp_path / "raw_with_silences.mp3"
+    raw_with_silences.export(str(raw_path), format="mp3")
+
+    cfg_path = tmp_path / "source_bank.json"
+    cfg_path.write_text('{"strip_edge_silence": true, "enhance_voice": true}')
+
+    out_path = tmp_path / "out_clean.mp3"
+
+    res = assemble_bulletin(
+        raw_path,
+        cfg_path,
+        out_path,
+        intro_asset=speech,
+        outro_asset=speech,
+        fond_asset=fond_asset,
+    )
+
+    assert res.segments_count == 2
+    assert out_path.exists()
+
+

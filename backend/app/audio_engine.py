@@ -95,6 +95,12 @@ class MixConfig:
     target_peak_dbfs: float = -1.0
     """Target peak level in dBFS for voice normalization (default -1.0 dBFS)."""
 
+    strip_edge_silence: bool = True
+    """Whether to strip leading and trailing silence from the raw voice before processing."""
+
+    enhance_voice: bool = True
+    """Whether to apply broadcast vocal enhancement (highpass, presence EQ, and dynamics compression)."""
+
     # ── factory ──────────────────────────────────────────────────────────────
 
     @classmethod
@@ -117,6 +123,8 @@ class MixConfig:
             segment_trim_pad_ms=int(raw.get("segment_trim_pad_ms", cls.segment_trim_pad_ms)),
             normalize_voice=bool(raw.get("normalize_voice", cls.normalize_voice)),
             target_peak_dbfs=float(raw.get("target_peak_dbfs", cls.target_peak_dbfs)),
+            strip_edge_silence=bool(raw.get("strip_edge_silence", cls.strip_edge_silence)),
+            enhance_voice=bool(raw.get("enhance_voice", cls.enhance_voice)),
         )
 
 
@@ -162,6 +170,102 @@ def normalize_audio(
     needed_gain = target_peak_dbfs - peak
     applied_gain = min(needed_gain, max_gain_db)
     return segment.apply_gain(applied_gain)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Voice Enhancement & Silence Stripping
+# ─────────────────────────────────────────────────────────────────────────────
+
+def strip_silence_edges(
+    audio: AudioSegment,
+    silence_thresh_offset: float = -16.0,
+    min_silence_len_ms: int = 200,
+    seek_step: int = 10,
+    lead_pad_ms: int = 10,
+    tail_pad_ms: int = 30,
+) -> AudioSegment:
+    """
+    Remove silence and ambient dead air from the leading edge (start)
+    and trailing edge (end) of an audio track.
+
+    Guarantees that speech starts immediately at the beginning (t=0)
+    without dead air or clicks, and ends cleanly.
+    """
+    if len(audio) == 0:
+        return audio
+
+    mean_dbfs = audio.dBFS
+    if math.isinf(mean_dbfs):
+        return audio
+
+    thresh = mean_dbfs + silence_thresh_offset
+
+    silences = _pydub_detect_silence(
+        audio,
+        min_silence_len=min_silence_len_ms,
+        silence_thresh=thresh,
+        seek_step=seek_step,
+    )
+    if not silences:
+        return audio
+
+    start_trim = 0
+    end_trim = len(audio)
+
+    # If first silence touches the beginning (within 80ms tolerance)
+    if silences[0][0] <= 80:
+        start_trim = max(0, silences[0][1] - lead_pad_ms)
+
+    # If last silence touches the end (within 80ms tolerance)
+    if silences[-1][1] >= len(audio) - 80:
+        end_trim = min(len(audio), silences[-1][0] + tail_pad_ms)
+
+    if start_trim >= end_trim:
+        return audio
+
+    return audio[start_trim:end_trim]
+
+
+def enhance_vocal_audio(
+    audio: AudioSegment,
+    target_peak_dbfs: float = -1.0,
+) -> AudioSegment:
+    """
+    Apply broadcast vocal enhancement and clarity adjustment:
+    1. Highpass filter @ 85 Hz: removes low-end rumble, HVAC noise, table thuds, and mic plosives.
+    2. De-muddiness EQ @ 350 Hz (-2.5 dB): removes boomy/boxy resonance.
+    3. Presence & intelligibility boost @ 3.2 kHz (+3.0 dB): highlights consonants and articulation.
+    4. Vocal dynamics leveling / compression: balances soft words and controls hot peaks.
+    5. Normalization to target_peak_dbfs: ensures voice is punchy, broadcast-level, and clearly heard.
+    """
+    if len(audio) == 0:
+        return audio
+
+    try:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            in_wav = Path(tmpdir) / "in_enhance.wav"
+            out_wav = Path(tmpdir) / "out_enhance.wav"
+            audio.export(str(in_wav), format="wav")
+
+            filter_chain = (
+                "highpass=f=85,"
+                "equalizer=f=350:width_type=q:width=1.2:g=-2.5,"
+                "equalizer=f=3200:width_type=q:width=1.2:g=3.0,"
+                "acompressor=threshold=-18dB:ratio=3:attack=15:release=120:makeup=2.0"
+            )
+            cmd = ["ffmpeg", "-y", "-i", str(in_wav), "-af", filter_chain, str(out_wav)]
+            subprocess.run(cmd, capture_output=True, check=True)
+            enhanced = AudioSegment.from_file(str(out_wav))
+            return normalize_audio(enhanced, target_peak_dbfs=target_peak_dbfs)
+    except Exception:
+        # Fallback to pure pydub filters if ffmpeg is unavailable
+        try:
+            filtered = audio.high_pass_filter(85)
+        except Exception:
+            filtered = audio
+        return normalize_audio(filtered, target_peak_dbfs=target_peak_dbfs)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -212,7 +316,7 @@ def detect_and_split_by_silence(
         raw_audio,
         min_silence_len=cfg.min_silence_len_ms,
         silence_thresh=abs_thresh,
-        seek_step=1,
+        seek_step=10,
     )
     silences: list[tuple[int, int]] = [(int(s), int(e)) for s, e in raw_silences]
 
@@ -475,8 +579,15 @@ def assemble_bulletin(
     # ── Load raw audio ────────────────────────────────────────────────────────
     raw = AudioSegment.from_file(str(raw_audio_path))
 
-    # ── Auto-Normalize raw input if low or un-normalized (Adobe Audition style) ──
-    if cfg.normalize_voice:
+    # ── STEP 0: Strip edge silence, enhance voice & normalize BEFORE anything ──
+    # Strip silence from start and end so speech starts immediately
+    if getattr(cfg, "strip_edge_silence", True):
+        raw = strip_silence_edges(raw, silence_thresh_offset=cfg.silence_thresh_db_relative)
+
+    # Enhance vocal track (highpass, clarity EQ, dynamic leveling) & normalize
+    if getattr(cfg, "enhance_voice", True):
+        raw = enhance_vocal_audio(raw, target_peak_dbfs=cfg.target_peak_dbfs)
+    elif cfg.normalize_voice:
         raw = normalize_audio(raw, target_peak_dbfs=cfg.target_peak_dbfs)
 
     # ── STEP 1: detect & split by silence ─────────────────────────────────────
@@ -492,6 +603,15 @@ def assemble_bulletin(
     segments = [trim_segment_edges(seg, cfg.segment_trim_pad_ms) for seg in segments]
     # Drop segments that become empty after trimming
     segments = [seg for seg in segments if len(seg) > 0]
+
+    if not segments:
+        raise ValueError("All speech segments were empty after trimming.")
+
+    # Guarantee segment 0 has zero leading silence
+    if getattr(cfg, "strip_edge_silence", True):
+        segments[0] = strip_silence_edges(segments[0], silence_thresh_offset=cfg.silence_thresh_db_relative)
+        segments[-1] = strip_silence_edges(segments[-1], silence_thresh_offset=cfg.silence_thresh_db_relative)
+        segments = [seg for seg in segments if len(seg) > 0]
 
     if not segments:
         raise ValueError("All speech segments were empty after trimming.")
@@ -527,12 +647,25 @@ def assemble_bulletin(
             bed_cursor += t_ms
 
     # ── STEP 5: prepend intro (no fond underneath) ────────────────────────────
-    INTRO_CROSSFADE_MS = min(len(intro), 4_000)
-    result = intro.append(body, crossfade=INTRO_CROSSFADE_MS)
+    intro_clean = strip_silence_edges(intro) if getattr(cfg, "strip_edge_silence", True) else intro
+    intro_fade_ms = min(len(intro_clean), 2_000)
+
+    intro_faded = intro_clean.fade_out(intro_fade_ms)
+    lead_in_dur = max(0, len(intro_faded) - intro_fade_ms)
+    lead_in = intro_faded[:lead_in_dur]
+    cross_tail = intro_faded[lead_in_dur:]
+
+    if len(body) >= len(cross_tail):
+        overlap = cross_tail.overlay(body[:len(cross_tail)])
+        result = lead_in + overlap + body[len(cross_tail):]
+    else:
+        overlap = cross_tail.overlay(body)
+        result = lead_in + overlap
 
     # ── STEP 6: append outro (crossfade with body end) ────────────────────────
-    OUTRO_CROSSFADE_MS = min(len(outro), 1_000)
-    result = result.append(outro, crossfade=OUTRO_CROSSFADE_MS)
+    outro_clean = strip_silence_edges(outro) if getattr(cfg, "strip_edge_silence", True) else outro
+    OUTRO_CROSSFADE_MS = min(len(outro_clean), 1_000)
+    result = result.append(outro_clean, crossfade=OUTRO_CROSSFADE_MS)
 
     # ── Ensure stereo ─────────────────────────────────────────────────────────
     result = result.set_channels(2)
