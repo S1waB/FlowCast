@@ -22,12 +22,16 @@ export interface BulletinStatusResponse {
   transitions_count?: number;
   duration_ms?: number;
   duration_s?: number;
+  project_name?: string;
   error?: string;
 }
 
-export async function createBulletin(file: File): Promise<BulletinCreateResponse> {
+export async function createBulletin(file: File, projectName?: string): Promise<BulletinCreateResponse> {
   const formData = new FormData();
   formData.append("file", file); // Match backend single file upload
+  if (projectName) {
+    formData.append("project_name", projectName);
+  }
 
   const res = await fetch(getUrl("/bulletins"), {
     method: "POST",

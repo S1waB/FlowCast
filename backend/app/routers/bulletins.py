@@ -11,11 +11,13 @@ GET   /bulletins/{job_id}/download  Stream the finished MP3.
 from __future__ import annotations
 
 import asyncio
+import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app import job_store
@@ -27,6 +29,7 @@ from app.dependencies import (
     convert_to_mp3,
     read_audio_upload,
 )
+from app.routers.projects import get_active_project_name
 from app.schemas import (
     BulletinCreateResponse,
     BulletinStatusResponse,
@@ -122,6 +125,7 @@ async def _run_async_assembly(job_id: str) -> None:
 async def create_bulletin(
     file: UploadFile,
     background_tasks: BackgroundTasks,
+    project_name: Optional[str] = Form(None),
 ) -> BulletinCreateResponse:
     """
     Accept **one** raw vocal audio file (mp3 or wav, max 500 MB) and immediately
@@ -139,7 +143,14 @@ async def create_bulletin(
     # ── Validate & persist the raw audio file ────────────────────────────────
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
 
-    placeholder_job = job_store.create_job([])
+    proj_name = (project_name or "").strip()
+    if not proj_name:
+        try:
+            proj_name = get_active_project_name()
+        except Exception:
+            proj_name = "default"
+
+    placeholder_job = job_store.create_job([], project_name=proj_name)
     job_id = placeholder_job.job_id
 
     content, ext = await read_audio_upload(file, MAX_CLIP_BYTES, field_name="file")
@@ -228,6 +239,7 @@ def get_bulletin_status(job_id: str) -> BulletinStatusResponse:
         transitions_count=job.transitions_count,
         duration_ms=job.duration_ms,
         duration_s=duration_s,
+        project_name=job.project_name,
         error=job.error,
     )
 
@@ -279,11 +291,16 @@ def download_bulletin(job_id: str) -> FileResponse:
             detail="Output file missing from disk even though job reported success.",
         )
 
-    # Format download title: news_time_date (e.g. news_14-30-05_2026-10-28.mp3)
+    # Format download title: news_projectName_time_date (e.g. news_Standard_14-30-05_2026-10-28.mp3)
     dt = job.created_at.astimezone() if (job.created_at and job.created_at.tzinfo) else datetime.now()
     time_str = dt.strftime("%H-%M-%S")
     date_str = dt.strftime("%Y-%m-%d")
-    dl_filename = f"news_{time_str}_{date_str}.mp3"
+
+    proj_clean = re.sub(r"[^\w\-]+", "_", (job.project_name or "project").strip()).strip("_")
+    if not proj_clean:
+        proj_clean = "project"
+
+    dl_filename = f"news_{proj_clean}_{time_str}_{date_str}.mp3"
 
     return FileResponse(
         path=str(output_path),

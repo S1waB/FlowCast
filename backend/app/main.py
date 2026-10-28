@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
-from app.routers import bulletins, health, source_bank
+from app.routers import bulletins, health, projects, source_bank
 
 
 # ── Lifespan ─────────────────────────────────────────────────────────────────
@@ -62,10 +62,16 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(source_bank.router)
 app.include_router(bulletins.router)
+app.include_router(projects.router)
 
 app.include_router(health.router, prefix="/api")
 app.include_router(source_bank.router, prefix="/api")
 app.include_router(bulletins.router, prefix="/api")
+app.include_router(projects.router, prefix="/api")
+
+# Also mount under source-bank/projects for convenience
+app.include_router(projects.router, prefix="/source-bank")
+app.include_router(projects.router, prefix="/api/source-bank")
 
 # ── Static Frontend ──────────────────────────────────────────────────────────
 # Look for 'static' directory in backend, current dir, or 'frontend/dist'

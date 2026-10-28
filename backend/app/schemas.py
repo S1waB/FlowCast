@@ -5,7 +5,7 @@ FlowCast – Pydantic schemas (request & response bodies).
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -125,6 +125,47 @@ class ConfigPatchResponse(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Projects (Bank Presets)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ProjectModel(BaseModel):
+    """A saved project / preset in the source bank."""
+
+    id: str
+    name: str
+    description: Optional[str] = ""
+    is_active: bool = False
+    created_at: str
+    updated_at: str
+    config: dict[str, Any]
+    assets: dict[str, str]
+
+
+class ProjectListResponse(BaseModel):
+    """Response for GET /projects."""
+
+    active_project_id: str
+    projects: list[ProjectModel]
+
+
+class ProjectCreateRequest(BaseModel):
+    """Request body for creating a new project."""
+
+    name: str = Field(..., min_length=1, max_length=100, description="Project name")
+    description: Optional[str] = Field("", max_length=500, description="Optional description")
+    copy_current_bank: bool = Field(True, description="Whether to copy current active assets & config")
+
+
+class ProjectUpdateRequest(BaseModel):
+    """Request body for updating an existing project."""
+
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    description: Optional[str] = Field(None, max_length=500)
+    config: Optional[dict[str, Any]] = None
+    save_current_bank: bool = Field(False, description="Overwrite project with current bank state")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Bulletins / jobs
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -157,5 +198,6 @@ class BulletinStatusResponse(BaseModel):
     duration_ms: Optional[int] = None
     """Final bulletin duration in ms (available once done)."""
     duration_s: Optional[float] = None
+    project_name: Optional[str] = None
     error: Optional[str] = None
     """Human-readable error message (available when status == error)."""

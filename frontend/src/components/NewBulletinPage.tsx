@@ -1,10 +1,20 @@
 import React, { useState, useEffect, useRef } from "react";
 import WaveSurfer from "wavesurfer.js";
 import { createBulletin, getBulletinStatus, getDownloadUrl, BulletinStatusResponse } from "../api/bulletins";
+import { fetchProjects, activateProject, ProjectModel } from "../api/projects";
 
 export default function NewBulletinPage() {
   const [file, setFile] = useState<{ raw: File, url: string } | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [projects, setProjects] = useState<ProjectModel[]>([]);
+  const [activeProjId, setActiveProjId] = useState<string>("default");
+
+  useEffect(() => {
+    fetchProjects().then(res => {
+      setProjects(res.projects);
+      setActiveProjId(res.active_project_id);
+    }).catch(() => {});
+  }, []);
 
   // Job state
   const [jobId, setJobId] = useState<string | null>(null);
@@ -88,7 +98,8 @@ export default function NewBulletinPage() {
     setJobStatus(null);
     
     try {
-      const res = await createBulletin(file.raw);
+      const activeProject = projects.find(p => p.id === activeProjId);
+      const res = await createBulletin(file.raw, activeProject?.name);
       setJobId(res.job_id);
     } catch (err: any) {
       setError(err.message);
@@ -97,9 +108,31 @@ export default function NewBulletinPage() {
 
   return (
     <div className="max-w-4xl mx-auto p-4 space-y-8 animate-fadeSlideDown">
-      <header className="mb-6">
-        <h1 className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-br from-white to-accent">Nouveau Bulletin</h1>
-        <p className="text-muted mt-2">Uploadez votre enregistrement brut, l'IA détectera les silences et mixera le bulletin automatiquement.</p>
+      <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+        <div>
+          <h1 className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-br from-white to-accent">Nouveau Bulletin</h1>
+          <p className="text-muted mt-1">Uploadez votre enregistrement brut, l'IA détectera les silences et mixera le bulletin automatiquement.</p>
+        </div>
+        {projects.length > 0 && (
+          <div className="flex items-center gap-2 bg-surface2 px-3 py-1.5 rounded-lg border border-border">
+            <span className="text-xs text-muted">Projet actif :</span>
+            <select
+              value={activeProjId}
+              onChange={async (e) => {
+                const newId = e.target.value;
+                setActiveProjId(newId);
+                await activateProject(newId);
+              }}
+              className="bg-surface text-text text-xs font-semibold rounded px-2 py-1 border border-border focus:border-accent outline-none cursor-pointer"
+            >
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </header>
 
       {/* Main Dropzone */}
@@ -222,7 +255,10 @@ function JobProgressView({ jobStatus, jobId, onReset }: { jobStatus: BulletinSta
     const pad = (n: number) => n.toString().padStart(2, "0");
     const time = `${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
     const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-    return `news_${time}_${date}.mp3`;
+    const proj = (jobStatus?.project_name || "project")
+      .replace(/[^\w\-]+/g, "_")
+      .replace(/^_+|_+$/g, "") || "project";
+    return `news_${proj}_${time}_${date}.mp3`;
   };
   
   const progressMap = {

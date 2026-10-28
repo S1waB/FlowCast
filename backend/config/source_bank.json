@@ -1,7 +1,7 @@
 {
-  "intro": "source_bank/intro.wav",
-  "outro": "source_bank/outro.mp3",
-  "fond": "source_bank/fond.mp3",
+  "intro": "source_bank/projects/radio_ml_8f18af/intro.mp3",
+  "outro": "source_bank/projects/radio_ml_8f18af/outro.mp3",
+  "fond": "source_bank/projects/radio_ml_8f18af/fond.mp3",
   "duck_db": -26.0,
   "transition_high_db": -3.0,
   "transition_total_ms": 3000,

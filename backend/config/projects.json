@@ -1,0 +1,77 @@
+{
+  "active_project_id": "radio_ml_8f18af",
+  "projects": [
+    {
+      "id": "default",
+      "name": "Projet Standard",
+      "description": "Configuration standard et assets de base de FlowCast",
+      "created_at": "2026-10-28T10:29:03.760951+00:00",
+      "updated_at": "2026-10-28T10:29:03.760951+00:00",
+      "config": {
+        "duck_db": -26.0,
+        "transition_high_db": -3.0,
+        "transition_total_ms": 3000,
+        "transition_fade_in_ms": 1000,
+        "transition_fade_out_ms": 1000,
+        "silence_thresh_db_relative": -16,
+        "min_silence_len_ms": 400,
+        "segment_trim_pad_ms": 0,
+        "normalize_voice": true,
+        "target_peak_dbfs": -1.0
+      },
+      "assets": {
+        "intro": "source_bank/intro.mp3",
+        "outro": "source_bank/outro.mp3",
+        "fond": "source_bank/fond.mp3"
+      }
+    },
+    {
+      "id": "radio_ml_8f18af",
+      "name": "radio ml",
+      "description": "",
+      "created_at": "2026-10-28T11:33:34.109244+00:00",
+      "updated_at": "2026-10-28T11:33:34.109244+00:00",
+      "config": {
+        "duck_db": -26.0,
+        "transition_high_db": -3.0,
+        "transition_total_ms": 3000,
+        "transition_fade_in_ms": 1000,
+        "transition_fade_out_ms": 1000,
+        "silence_thresh_db_relative": -16,
+        "min_silence_len_ms": 400,
+        "segment_trim_pad_ms": 0,
+        "normalize_voice": true,
+        "target_peak_dbfs": -1.0
+      },
+      "assets": {
+        "fond": "source_bank/projects/radio_ml_8f18af/fond.mp3",
+        "outro": "source_bank/projects/radio_ml_8f18af/outro.mp3",
+        "intro": "source_bank/projects/radio_ml_8f18af/intro.mp3"
+      }
+    },
+    {
+      "id": "radio_6_tunis_f6c19c",
+      "name": "radio 6 tunis",
+      "description": "",
+      "created_at": "2026-10-28T11:34:18.637245+00:00",
+      "updated_at": "2026-10-28T11:34:26.871466+00:00",
+      "config": {
+        "duck_db": -26,
+        "transition_high_db": -3,
+        "transition_total_ms": 3000,
+        "transition_fade_in_ms": 1000,
+        "transition_fade_out_ms": 1000,
+        "silence_thresh_db_relative": -16,
+        "min_silence_len_ms": 400,
+        "segment_trim_pad_ms": 0,
+        "normalize_voice": true,
+        "target_peak_dbfs": -1
+      },
+      "assets": {
+        "fond": "source_bank/projects/radio_6_tunis_f6c19c/fond.mp3",
+        "outro": "source_bank/projects/radio_6_tunis_f6c19c/outro.mp3",
+        "intro": "source_bank/projects/radio_6_tunis_f6c19c/intro.wav"
+      }
+    }
+  ]
+}

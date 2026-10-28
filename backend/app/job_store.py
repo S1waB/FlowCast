@@ -33,18 +33,23 @@ class BulletinJob:
     duration_ms: Optional[int] = None
     output_path: Optional[str] = None
     error: Optional[str] = None
+    project_name: Optional[str] = None
 
 
 _store: dict[str, BulletinJob] = {}
 _lock = threading.Lock()
 
 
-def create_job(voice_clip_paths: list[str | Path]) -> BulletinJob:
+def create_job(
+    voice_clip_paths: list[str | Path],
+    project_name: Optional[str] = None,
+) -> BulletinJob:
     """Create a new job record and add it to the store."""
     paths = [str(p) for p in voice_clip_paths]
     job = BulletinJob(
         job_id=str(uuid.uuid4()),
         voice_clip_paths=paths,
+        project_name=project_name,
     )
     with _lock:
         _store[job.job_id] = job
