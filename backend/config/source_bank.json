@@ -1,9 +1,9 @@
 {
-  "intro": "source_bank/projects/radio_ml_8f18af/intro.mp3",
-  "outro": "source_bank/projects/radio_ml_8f18af/outro.mp3",
-  "fond": "source_bank/projects/radio_ml_8f18af/fond.mp3",
-  "duck_db": -26.0,
-  "transition_high_db": -3.0,
+  "intro": "source_bank/projects/radio_6_tunis_f6c19c/intro.wav",
+  "outro": "source_bank/projects/radio_6_tunis_f6c19c/outro.mp3",
+  "fond": "source_bank/projects/radio_6_tunis_f6c19c/fond.mp3",
+  "duck_db": -26,
+  "transition_high_db": -3,
   "transition_total_ms": 3000,
   "transition_fade_in_ms": 1000,
   "transition_fade_out_ms": 1000,
@@ -11,5 +11,5 @@
   "min_silence_len_ms": 400,
   "segment_trim_pad_ms": 0,
   "normalize_voice": true,
-  "target_peak_dbfs": -1.0
+  "target_peak_dbfs": -1
 }
